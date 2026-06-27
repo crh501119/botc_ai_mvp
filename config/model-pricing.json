@@ -1,0 +1,31 @@
+{
+  "updated_at": "2026-06-23",
+  "currency": "USD",
+  "note": "Prices are local estimates. Null means unknown; show tokens but do not fabricate cost.",
+  "models": {
+    "gpt-5.4-mini": {
+      "input_per_1m": null,
+      "cached_input_per_1m": null,
+      "output_per_1m": null,
+      "reasoning_per_1m": null
+    },
+    "gpt-5.4-nano": {
+      "input_per_1m": null,
+      "cached_input_per_1m": null,
+      "output_per_1m": null,
+      "reasoning_per_1m": null
+    },
+    "mock": {
+      "input_per_1m": 0.0,
+      "cached_input_per_1m": 0.0,
+      "output_per_1m": 0.0,
+      "reasoning_per_1m": 0.0
+    },
+    "test-priced-model": {
+      "input_per_1m": 1.0,
+      "cached_input_per_1m": 0.1,
+      "output_per_1m": 2.0,
+      "reasoning_per_1m": 0.0
+    }
+  }
+}
