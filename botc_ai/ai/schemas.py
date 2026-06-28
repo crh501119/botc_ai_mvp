@@ -12,11 +12,11 @@ class AIMemoryUpdate(BaseModel):
     private_promises: list[str] = Field(default_factory=list)
     current_bluff: str | None = None
     next_intent: str = "觀察"
-    summary: str = Field(default="", max_length=900)
+    summary: str = Field(default="", max_length=1200)
 
 
 class PublicSpeechAction(BaseModel):
-    speech: str = Field(min_length=1, max_length=280)
+    speech: str = Field(min_length=1, max_length=220)
     claimed_role: str | None = None
     concise_rationale: str = Field(default="", max_length=160)
     memory_update: AIMemoryUpdate = Field(default_factory=AIMemoryUpdate)

@@ -453,10 +453,116 @@ def _clean_mock_speech(text: str) -> str:
     return re.sub(r"\s+", " ", text).replace(" 。", "。").strip()
 
 
+def _player_label_for_mock(state: TruthState, player_id: str) -> str:
+    player = state.by_id(player_id)
+    return f"{player.seat + 1}號{player.name}"
+
+
+def _private_info_brief_for_mock(state: TruthState, player_id: str) -> str:
+    for event in reversed(state.events):
+        if event.scope != AudienceScope.PLAYER_ONLY or player_id not in event.target_ids:
+            continue
+        if event.type == "clockmaker_info":
+            return f"我是鐘錶匠，數字是 {event.metadata.get('value')}。"
+        if event.type == "investigator_info":
+            players = event.metadata.get("players", [])
+            role = event.metadata.get("minion_role")
+            if isinstance(players, list) and len(players) >= 2 and isinstance(role, str):
+                return (
+                    f"我是調查員，{_player_label_for_mock(state, str(players[0]))}"
+                    f"和{_player_label_for_mock(state, str(players[1]))}裡有一個"
+                    f"{ROLE_SPECS[role].zh_name}。"
+                )
+        if event.type == "empath_info":
+            return f"我是共情者，數字是 {event.metadata.get('value')}。"
+        if event.type == "chambermaid_info":
+            players = event.metadata.get("players", [])
+            if isinstance(players, list) and len(players) >= 2:
+                return (
+                    f"我是侍女，查了{_player_label_for_mock(state, str(players[0]))}"
+                    f"和{_player_label_for_mock(state, str(players[1]))}，數字是"
+                    f"{event.metadata.get('value')}。"
+                )
+    return ""
+
+
+def _asks_identity_for_mock(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    return any(token in compact for token in ("身分", "身份", "角色", "資訊", "你是什麼"))
+
+
+def _natural_mock_public_speech(state: TruthState, player_id: str) -> PublicSpeechAction:
+    rng = _rng_for(state, player_id, "natural_public_speech")
+    player = state.by_id(player_id)
+    memory = state.ai_memories.get(player_id)
+    style = _persona_style(player_id)
+    valid_targets = [p.id for p in state.players if p.id != player_id]
+    suspect_id = _top_suspect(state, player_id, valid_targets, purpose="natural_public_speech")
+    suspect_id = _alternate_suspect(state, player_id, suspect_id, valid_targets)
+    suspect_label = _player_label_for_mock(state, suspect_id) if suspect_id else "某個邊位"
+    speech_count = _public_speech_count(state, player_id)
+    latest = _latest_public_speech(state, player_id)
+    latest_text = latest[1] if latest else ""
+    info = _private_info_brief_for_mock(state, player_id)
+    claim = _claim_for_mock(state, player_id, rng)
+    claim_name = ROLE_SPECS[claim].zh_name
+    claim_used = False
+
+    if not player.alive:
+        speech = (
+            f"我死了但還有鬼票，先不急著丟。我現在最想聽 {suspect_label} 把昨天那輪投票講清楚。"
+        )
+    elif latest and _asks_identity_for_mock(latest_text):
+        if info:
+            speech = f"我回一下，我可以先開：{info}所以我想先對 {suspect_label} 施壓。"
+            claim_used = True
+        else:
+            speech = (
+                f"我回一下，我目前偏向報 {claim_name}，但不想把細節一次交完。"
+                f"{suspect_label} 先說你昨晚或第一夜拿到什麼。"
+            )
+            claim_used = True
+    elif speech_count == 0 and info and rng.random() < 0.82:
+        speech = f"我先給資訊：{info}這局先從座位關係看，{suspect_label} 的反應我會特別記。"
+        claim_used = True
+    elif speech_count == 0:
+        openings = {
+            "邏輯分析型": f"我先不講空話。現在昨晚死亡是 {len(state.last_night_deaths)} 人，我想先聽 {suspect_label} 的角色範圍。",
+            "社交協調型": f"我想先把資訊排一下。{suspect_label} 你可以先給一個角色範圍，我再決定要不要私聊你。",
+            "激進施壓型": f"我會先壓 {suspect_label}。不用長篇，直接說你是不是資訊位、拿到什麼。",
+            "保守懷疑型": f"我先保守一點，不急著定人。{suspect_label} 如果只講態度不講資訊，我會先扣分。",
+            "直覺混沌型": f"我直覺先看 {suspect_label}，不是定狼，但這個位置今天得講點真的東西。",
+        }
+        speech = openings.get(style, f"我先聽 {suspect_label} 的資訊，再決定票要不要動。")
+    else:
+        vote_line = _latest_vote_result_line(state)
+        if vote_line:
+            speech = f"{vote_line} 這票型我先記下來；下一個我想聽 {suspect_label} 怎麼解釋。"
+        elif latest:
+            actor_name, _ = latest
+            speech = f"接 {actor_name} 那句，我不同意只打模糊仗。{suspect_label} 直接給角色範圍或夜晚資訊。"
+        else:
+            speech = f"我目前不想散票。{suspect_label} 如果再不給資訊，我會考慮把你放進提名池。"
+
+    if memory is not None:
+        memory.next_intent = f"追問 {suspect_label} 的資訊與票型"
+        memory.summary = (
+            f"{memory.summary}\nD{state.day}: public stance toward {suspect_id}".strip()[-1100:]
+        )
+        memory.public_facts.append(f"D{state.day}: 自己公開壓力給 {suspect_label}")
+        memory.compact()
+    _mock_usage(state, player_id, "public_speech", 220, 55)
+    return PublicSpeechAction(
+        speech=_clean_mock_speech(speech)[:220],
+        claimed_role=claim if claim_used else None,
+    )
+
+
 class MockAIProvider:
     model = "mock"
 
     async def public_speech(self, state: TruthState, player_id: str) -> PublicSpeechAction:
+        return _natural_mock_public_speech(state, player_id)
         rng = _rng_for(state, player_id, "public_speech")
         style = _persona_style(player_id)
         player = state.by_id(player_id)
@@ -1025,7 +1131,7 @@ def _apply_memory_update(state: TruthState, player_id: str, update: AIMemoryUpda
     if update.next_intent.strip():
         memory.next_intent = update.next_intent.strip()[:180]
     if update.summary.strip():
-        memory.summary = f"{memory.summary}\n{update.summary.strip()}"[-900:]
+        memory.summary = f"{memory.summary}\n{update.summary.strip()}"[-1200:]
     for promise in update.private_promises[-3:]:
         if promise.strip():
             memory.private_promises.append(promise.strip()[:160])

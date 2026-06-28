@@ -241,7 +241,7 @@ def build_game_view(
 
 
 def build_ai_context(
-    state: TruthState, player_id: str, *, purpose: str, max_chars: int = 8500
+    state: TruthState, player_id: str, *, purpose: str, max_chars: int = 11000
 ) -> str:
     public = build_public_state(state).model_dump(mode="json")
     private = build_private_view(state, player_id).model_dump(mode="json")
@@ -261,6 +261,15 @@ def build_ai_context(
         },
         "action_contract": _action_contract(purpose, state, player_id),
         "conversation_directive": _conversation_directive(state, player_id, purpose),
+        "real_player_speech_protocol": [
+            "先回應上一位玩家或目前提名，不要像摘要機器一樣重複全桌狀態。",
+            "每次公開發言只做一到兩件事：給自己的資訊/立場、問一個具體座位、或推一個明確行動。",
+            "常用座位號，例如『3號』、『我左邊』、『5號剛才那票』；不要只用抽象詞。",
+            "如果你是資訊角色且已收到私人資訊，白天要考慮主動透露全部或部分資訊；不要整天只說再觀察。",
+            "避免模板句：『可驗證的點』、『先看票型』、『把話收窄』、『需要被追問』。除非你接著講出具體座位與理由。",
+            "如果真人直接問身份或資訊，請正面回答：可以全開、半開或說明為何暫不全開，但不能無視問題。",
+            "講話自然短促，可以有猶豫、讓步、改口；不要每句都像正式結論。",
+        ],
         "table_reading_protocol": [
             "發言前先讀 recent_public_events、visible_table_read.claim_conflicts、visible_table_read.vote_patterns。",
             "公開發言至少引用一個具體場上資訊：某人的角色宣稱、你的私人資訊、昨夜死亡、某次提名或某次投票。",
@@ -297,6 +306,8 @@ def build_ai_context(
         "public_state": public,
         "your_private_view": private,
         "your_memory": memory.model_dump(mode="json") if memory else None,
+        "your_public_fact_notes": memory.public_facts[-14:] if memory else [],
+        "your_vote_notes": memory.vote_notes[-14:] if memory else [],
         "script": [item.model_dump(mode="json") for item in script_view()],
     }
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -504,6 +515,11 @@ def _action_contract(purpose: str, state: TruthState, player_id: str) -> dict[st
         "valid_target_ids": valid_targets,
         "valid_target_names": names,
         "required_memory_update": "填寫短 summary、next_intent，必要時更新 suspicion_delta 或 current_bluff。",
+        "speech_shape": {
+            "public": "1 到 2 句，像真人桌邊發言。至少包含一個具體座位、角色資訊、票型事件或問題。",
+            "private": "直接交換資訊或承諾，不要寫成公開演講。",
+            "nomination": "只有在已經有具體理由時才提名，理由要能讓其他玩家投票。",
+        },
     }
     if purpose.startswith("public_speech"):
         base["instruction"] = (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -43,6 +44,8 @@ from botc_ai.domain.setup import AI_PERSONAS, generate_game
 from botc_ai.infra.db import SessionLocal, init_db
 from botc_ai.infra.repository import GameRepository
 from botc_ai.settings import Settings, get_settings
+
+_GAME_ACTION_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -260,12 +263,13 @@ def create_app() -> FastAPI:
         player_token: str | None = Header(default=None, alias="X-Player-Token"),
         session: Session = Depends(get_db),
     ) -> GameView:
-        state = _load(session, game_id)
-        _require_human_session(state, player_id, player_token)
-        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
-        await engine.ai_tick(state)
-        GameRepository(session).save_state(state)
-        session.commit()
+        async with _game_action_lock(game_id):
+            state = _load(session, game_id)
+            _require_human_session(state, player_id, player_token)
+            engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+            await engine.ai_tick(state)
+            GameRepository(session).save_state(state)
+            session.commit()
         return build_game_view(
             state, player_id, dev_reveal=settings.dev_reveal, session_token=player_token
         )
@@ -277,12 +281,13 @@ def create_app() -> FastAPI:
         player_token: str | None = Header(default=None, alias="X-Player-Token"),
         session: Session = Depends(get_db),
     ) -> GameView:
-        state = _load(session, game_id)
-        _require_human_session(state, player_id, player_token)
-        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
-        await engine.run_until_human_decision(state)
-        GameRepository(session).save_state(state)
-        session.commit()
+        async with _game_action_lock(game_id):
+            state = _load(session, game_id)
+            _require_human_session(state, player_id, player_token)
+            engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+            await engine.run_until_human_decision(state)
+            GameRepository(session).save_state(state)
+            session.commit()
         return build_game_view(
             state, player_id, dev_reveal=settings.dev_reveal, session_token=player_token
         )
@@ -441,17 +446,18 @@ def create_app() -> FastAPI:
         player_token: str | None = Header(default=None, alias="X-Player-Token"),
         session: Session = Depends(get_db),
     ) -> GameView:
-        state = _load(session, game_id)
-        _require_human_session(state, request.nominator_id, player_token)
-        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
-        try:
-            await engine.create_nomination(
-                state, request.nominator_id, request.nominee_id, request.reason
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        GameRepository(session).save_state(state)
-        session.commit()
+        async with _game_action_lock(game_id):
+            state = _load(session, game_id)
+            _require_human_session(state, request.nominator_id, player_token)
+            engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+            try:
+                await engine.create_nomination(
+                    state, request.nominator_id, request.nominee_id, request.reason
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            GameRepository(session).save_state(state)
+            session.commit()
         return build_game_view(
             state,
             request.nominator_id,
@@ -605,6 +611,14 @@ def _require_human_session(state: Any, player_id: str, token: str | None) -> Non
 def _require_host(state: Any, player_id: str) -> None:
     if player_id != state.host_player_id:
         raise HTTPException(status_code=403, detail="只有房主可以執行這個動作。")
+
+
+def _game_action_lock(game_id: str) -> asyncio.Lock:
+    lock = _GAME_ACTION_LOCKS.get(game_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _GAME_ACTION_LOCKS[game_id] = lock
+    return lock
 
 
 def _reactive_limit_for_speech(speech: str) -> int:

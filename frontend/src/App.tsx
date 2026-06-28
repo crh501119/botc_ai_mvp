@@ -658,6 +658,7 @@ export function GameScreen({
   const canSkipSpeech = view.private.legal_actions.includes("skip_speech");
   const canPrivateChat = view.private.legal_actions.includes("private_chat");
   const canVote = view.private.legal_actions.includes("vote_yes");
+  const canNominate = view.private.legal_actions.includes("nominate");
   const canPhaseReady = view.private.legal_actions.includes("phase_ready");
   const canKlutzChoose = view.private.legal_actions.includes("klutz_choose");
   const nightPrompt = view.private.pending_actions.find(
@@ -1286,7 +1287,9 @@ export function GameScreen({
                     onChange={(event) => setReason(event.target.value)}
                   />
                 </label>
-                <button disabled={busy || !nominee}>提名</button>
+                <button disabled={busy || !canNominate || !nominee}>
+                  提名
+                </button>
               </form>
             )}
             <p className="small">

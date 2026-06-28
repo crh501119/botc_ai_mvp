@@ -88,6 +88,18 @@ async def test_mock_ai_provider_does_not_call_network() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mock_info_role_volunteers_real_table_information(mock_engine) -> None:
+    state = fixed_state("sage", "clockmaker", "empath", "klutz", "scarlet_woman", "imp")
+    mock_engine._resolve_clockmaker(state, "ai_1")
+
+    speech = await MockAIProvider().public_speech(state, "ai_1")
+
+    assert "鐘錶匠" in speech.speech
+    assert "數字" in speech.speech
+    assert speech.claimed_role == "clockmaker"
+
+
+@pytest.mark.asyncio
 async def test_mock_ai_opening_avoids_template_dogpile_on_human() -> None:
     state = fixed_state(seed=21)
     provider = MockAIProvider()

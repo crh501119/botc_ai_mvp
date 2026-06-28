@@ -1451,6 +1451,11 @@ class GameEngine:
     def _validate_nomination(
         self, state: TruthState, nominator: PlayerTruth, nominee: PlayerTruth
     ) -> None:
+        if any(
+            nomination.day == state.day and not nomination.resolved
+            for nomination in state.nominations
+        ):
+            raise ValueError("目前已有提名正在投票，請先完成這次投票。")
         if state.execution_done_today:
             raise ValueError("今天已經處決過，不能再提名。")
         if not nominator.alive:
@@ -1546,21 +1551,34 @@ class GameEngine:
         for other_id, other_memory in state.ai_memories.items():
             if other_id != player_id:
                 other_memory.known_claims[player_id] = claimed_role
+                claimant = state.by_id(player_id)
+                other_memory.public_facts.append(
+                    f"D{state.day}: {claimant.seat + 1}號{claimant.name}公開宣稱{ROLE_SPECS[claimed_role].zh_name}"
+                )
+                other_memory.compact()
 
     def _remember_nomination_pressure(
         self, state: TruthState, nominator_id: str, nominee_id: str
     ) -> None:
+        nominator = state.by_id(nominator_id)
+        nominee = state.by_id(nominee_id)
+        fact = f"D{state.day}: {nominator.seat + 1}號{nominator.name}提名{nominee.seat + 1}號{nominee.name}"
         for memory in state.ai_memories.values():
             self._bump_suspicion(memory, nominee_id, 0.05)
+            memory.public_facts.append(fact)
             self._append_memory_note(memory, f"public nomination: {nominator_id}->{nominee_id}")
 
     def _remember_vote_result(self, state: TruthState, nomination: NominationRecord) -> None:
         nominee_delta = 0.04 if nomination.eligible_for_execution else -0.02
         nominator_delta = 0.0 if nomination.eligible_for_execution else 0.015
+        nominee = state.by_id(nomination.nominee_id)
         for memory in state.ai_memories.values():
             self._bump_suspicion(memory, nomination.nominee_id, nominee_delta)
             self._bump_suspicion(memory, nomination.nominator_id, nominator_delta)
             outcome = "eligible" if nomination.eligible_for_execution else "low"
+            memory.vote_notes.append(
+                f"D{state.day}: {nominee.seat + 1}號{nominee.name} {nomination.votes}/{nomination.threshold} ({outcome})"
+            )
             self._append_memory_note(
                 memory,
                 f"vote result: {nomination.nominee_id} {nomination.votes}/{nomination.threshold} {outcome}",
@@ -1573,7 +1591,7 @@ class GameEngine:
         memory.suspicion[target_id] = round(min(1.0, max(0.0, current + delta)), 3)
 
     def _append_memory_note(self, memory: AIMemory, note: str) -> None:
-        memory.summary = f"{memory.summary}\n{note}".strip()[-700:]
+        memory.summary = f"{memory.summary}\n{note}".strip()[-1100:]
         memory.compact()
 
     def _remember_private(self, state: TruthState, player_id: str, note: str) -> None:
@@ -1594,7 +1612,7 @@ class GameEngine:
         return random.Random(f"{state.seed}:{salt}")
 
 
-def _table_public_speech(text: str, *, max_chars: int = 170, max_sentences: int = 2) -> str:
+def _table_public_speech(text: str, *, max_chars: int = 150, max_sentences: int = 2) -> str:
     clean = re.sub(r"\s+", " ", text).strip()
     if not clean:
         return clean

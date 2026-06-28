@@ -131,6 +131,15 @@ async def test_nominee_limit(mock_engine) -> None:
 
 
 @pytest.mark.asyncio
+async def test_open_nomination_blocks_collision(mock_engine) -> None:
+    state = fixed_state()
+    await mock_engine.create_nomination(state, "human", "ai_1", "第一個提名")
+
+    with pytest.raises(ValueError, match="已有提名"):
+        await mock_engine.create_nomination(state, "ai_2", "ai_3", "撞車提名")
+
+
+@pytest.mark.asyncio
 async def test_dead_cannot_nominate(mock_engine) -> None:
     state = fixed_state()
     state.by_id("human").alive = False

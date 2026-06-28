@@ -139,12 +139,18 @@ class AIMemory(BaseModel):
     current_bluff: str | None = None
     next_intent: str = "觀察局勢"
     summary: str = ""
+    public_facts: list[str] = Field(default_factory=list)
+    vote_notes: list[str] = Field(default_factory=list)
 
-    def compact(self, max_chars: int = 700) -> None:
+    def compact(self, max_chars: int = 1100) -> None:
         if len(self.summary) > max_chars:
             self.summary = self.summary[-max_chars:]
         if len(self.private_promises) > 8:
             self.private_promises = self.private_promises[-8:]
+        if len(self.public_facts) > 14:
+            self.public_facts = self.public_facts[-14:]
+        if len(self.vote_notes) > 14:
+            self.vote_notes = self.vote_notes[-14:]
 
 
 class ApiUsageRecord(BaseModel):

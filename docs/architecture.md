@@ -42,7 +42,11 @@ The context builder also adds public-only reasoning aids: claim conflicts derive
 
 ## Public Observation Memory
 
-The engine updates each AI memory from public table events. Human and AI public role claims are parsed conservatively, nominations slightly adjust suspicion toward the nominee, and vote results nudge the table read based on whether the vote reached execution threshold. These updates are independent per AI and never use hidden role or alignment data.
+The engine updates each AI memory from public table events. Human and AI public role claims are parsed conservatively, nominations slightly adjust suspicion toward the nominee, and vote results nudge the table read based on whether the vote reached execution threshold. Each memory also keeps short public fact notes and vote notes so AI players can refer back to concrete seats and earlier outcomes instead of repeating generic pressure language. These updates are independent per AI and never use hidden role or alignment data.
+
+AI speech prompts include a real-player protocol: respond to the current table moment, use seat numbers, volunteer legal role information when appropriate, ask one concrete question at a time, and avoid repeated abstract phrases such as "可驗證的點" unless attached to a specific seat and reason. Mock AI follows the same product direction with deterministic table-talk templates for offline tests.
+
+Open nominations are serialized by the domain engine and by a per-game API action lock. If a nomination is already waiting for votes, new human or AI nominations are rejected until that vote resolves. This prevents simultaneous browser requests or an AI tick from creating overlapping nominations.
 
 ## Multiplayer Rooms
 
