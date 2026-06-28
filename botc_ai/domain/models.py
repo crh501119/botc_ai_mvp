@@ -23,6 +23,11 @@ class Phase(StrEnum):
     GAME_OVER = "GAME_OVER"
 
 
+class DiscussionMode(StrEnum):
+    FREE = "free"
+    ORDERED = "ordered"
+
+
 class AudienceScope(StrEnum):
     PUBLIC = "PUBLIC"
     PLAYER_ONLY = "PLAYER_ONLY"
@@ -118,6 +123,13 @@ class VoteRecord(BaseModel):
     public_reason: str = ""
 
 
+class TargetPrompt(BaseModel):
+    action: str
+    prompt: str
+    target_count: int = 1
+    valid_target_ids: list[str] = Field(default_factory=list)
+
+
 class AIMemory(BaseModel):
     player_id: str
     suspicion: dict[str, float] = Field(default_factory=dict)
@@ -163,6 +175,7 @@ class TruthState(BaseModel):
     version: str = "0.1.0"
     seed: int | None = None
     human_id: str = "human"
+    host_player_id: str = "human"
     day: int = 1
     phase: Phase = Phase.SETUP
     players: list[PlayerTruth]
@@ -184,10 +197,25 @@ class TruthState(BaseModel):
     mock_ai: bool = False
     ai_cooldown_seconds: int = 10
     last_ai_tick_at: datetime | None = None
+    phase_started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    phase_deadline_at: datetime | None = None
+    night_duration_seconds: int = 90
+    day_discussion_duration_seconds: int = 240
+    private_chat_duration_seconds: int = 180
+    nominations_duration_seconds: int = 180
+    voting_duration_seconds: int = 60
+    discussion_mode: DiscussionMode = DiscussionMode.FREE
     discussion_rounds_today: int = 0
     discussion_speakers_today: list[str] = Field(default_factory=list)
+    ordered_speaker_id: str | None = None
     ai_private_chat_initiated_today: list[str] = Field(default_factory=list)
     player_sessions: dict[str, PlayerSession] = Field(default_factory=dict)
+    shuffle_seats_on_start: bool = True
+    seats_finalized: bool = False
+    pending_action_prompts: dict[str, TargetPrompt] = Field(default_factory=dict)
+    night_action_choices: dict[str, list[str]] = Field(default_factory=dict)
+    night_progress: list[str] = Field(default_factory=list)
+    phase_ready: dict[str, list[str]] = Field(default_factory=dict)
     ai_last_status: str = "AI 正在等待桌面節奏。"
     ai_active_player_id: str | None = None
 
@@ -298,7 +326,14 @@ class PublicState(BaseModel):
     ai_status: str
     ai_active_player_id: str | None
     ai_cooldown_seconds: int
+    phase_started_at: datetime
+    phase_deadline_at: datetime | None
+    phase_remaining_seconds: int | None
+    host_player_id: str
+    discussion_mode: DiscussionMode
     discussion_rounds_today: int
+    current_speaker_id: str | None
+    human_seats_ready: bool
 
 
 class PlayerPrivateView(BaseModel):
@@ -313,6 +348,7 @@ class PlayerPrivateView(BaseModel):
     private_chats: list[GameEvent]
     memory: AIMemory | None = None
     legal_actions: list[str] = Field(default_factory=list)
+    pending_actions: list[TargetPrompt] = Field(default_factory=list)
 
 
 class PostgameReveal(BaseModel):

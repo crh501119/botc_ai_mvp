@@ -5,6 +5,10 @@ export function makeGameView(overrides: Record<string, unknown> = {}): any {
       day: 1,
       phase: "DAY_DISCUSSION",
       mock_ai: true,
+      host_player_id: "human",
+      discussion_mode: "free",
+      current_speaker_id: null,
+      human_seats_ready: true,
       players: [
         {
           id: "human",
@@ -88,6 +92,9 @@ export function makeGameView(overrides: Record<string, unknown> = {}): any {
       ai_status: "AI 自主行動每 5 秒檢查一次。",
       ai_active_player_id: null,
       ai_cooldown_seconds: 5,
+      phase_started_at: new Date().toISOString(),
+      phase_deadline_at: null,
+      phase_remaining_seconds: null,
       discussion_rounds_today: 0,
       usage: {
         calls: 3,
@@ -140,6 +147,7 @@ export function makeGameView(overrides: Record<string, unknown> = {}): any {
         },
       ],
       legal_actions: ["artist_question", "nominate"],
+      pending_actions: [],
     },
     script: [
       {

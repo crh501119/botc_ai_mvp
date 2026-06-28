@@ -4,7 +4,14 @@ import random
 from dataclasses import dataclass
 from uuid import uuid4
 
-from botc_ai.domain.models import AIMemory, AudienceScope, Phase, PlayerTruth, TruthState
+from botc_ai.domain.models import (
+    AIMemory,
+    AudienceScope,
+    DiscussionMode,
+    Phase,
+    PlayerTruth,
+    TruthState,
+)
 from botc_ai.domain.roles import MINIONS, OUTSIDERS, ROLE_SPECS, TOWNSFOLK
 
 
@@ -111,6 +118,13 @@ def generate_game(
     force_human_role: str | None = None,
     budget_usd: float = 1.0,
     mock_ai: bool = False,
+    discussion_mode: DiscussionMode | str = DiscussionMode.FREE,
+    shuffle_seats_on_start: bool = False,
+    night_seconds: int = 90,
+    day_discussion_seconds: int = 240,
+    private_chat_seconds: int = 180,
+    nominations_seconds: int = 180,
+    voting_seconds: int = 60,
 ) -> TruthState:
     if human_count < 1 or human_count > 6:
         raise ValueError("human_count must be between 1 and 6")
@@ -161,6 +175,13 @@ def generate_game(
         current_demon_id=demon.id,
         budget_usd=budget_usd,
         mock_ai=mock_ai,
+        discussion_mode=DiscussionMode(discussion_mode),
+        shuffle_seats_on_start=shuffle_seats_on_start,
+        night_duration_seconds=night_seconds,
+        day_discussion_duration_seconds=day_discussion_seconds,
+        private_chat_duration_seconds=private_chat_seconds,
+        nominations_duration_seconds=nominations_seconds,
+        voting_duration_seconds=voting_seconds,
     )
     state.phase = Phase.SETUP
 
@@ -190,9 +211,9 @@ def generate_game(
             )
 
     state.add_event(
-        "六人 No Greater Joy 開局。惡魔與爪牙在此 Teensyville 局中不互認，也沒有惡魔 bluff。",
+        "No Greater Joy 房間已建立，等待所有真人玩家入座。",
         scope=AudienceScope.PUBLIC,
-        type="game_start",
+        type="lobby_created",
     )
     state.add_event(
         "Teensyville starting info skipped: evil players did not receive teammate identities.",

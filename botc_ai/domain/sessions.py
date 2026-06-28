@@ -51,3 +51,7 @@ def open_human_seats(state: TruthState) -> list[str]:
         for player in state.players
         if player.is_human and not human_seat_claimed(state, player.id)
     ]
+
+
+def all_human_seats_claimed(state: TruthState) -> bool:
+    return not open_human_seats(state)

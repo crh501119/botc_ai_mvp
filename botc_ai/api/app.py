@@ -17,10 +17,13 @@ from botc_ai.api.schemas import (
     ActionResponse,
     ArtistQuestionRequest,
     BudgetUpdateRequest,
+    ChambermaidChoiceRequest,
     CreateGameRequest,
     JoinGameRequest,
     KlutzChoiceRequest,
+    NightTargetRequest,
     NominationRequest,
+    PhaseReadyRequest,
     PrivateChatRequest,
     PublicSpeechRequest,
     VoteRequest,
@@ -30,8 +33,10 @@ from botc_ai.domain.engine import GameEngine
 from botc_ai.domain.models import GameView, Phase
 from botc_ai.domain.sessions import (
     SessionError,
+    all_human_seats_claimed,
     authenticate_human_seat,
     claim_human_seat,
+    human_seat_claimed,
     open_human_seats,
 )
 from botc_ai.domain.setup import AI_PERSONAS, generate_game
@@ -109,15 +114,19 @@ def create_app() -> FastAPI:
         state = generate_game(
             human_name=request.human_name,
             human_count=request.human_count,
+            discussion_mode=request.discussion_mode,
+            shuffle_seats_on_start=request.shuffle_seats_on_start,
             seed=request.seed,
             force_minion=request.force_minion,
             budget_usd=request.budget_usd,
             mock_ai=mock_ai,
+            night_seconds=request.night_seconds,
+            day_discussion_seconds=request.day_discussion_seconds,
+            private_chat_seconds=request.private_chat_seconds,
+            nominations_seconds=request.nominations_seconds,
+            voting_seconds=request.voting_seconds,
         )
         session_claim = claim_human_seat(state, "human", request.human_name)
-        engine = make_engine_for_state(settings, mock_ai=mock_ai)
-        await engine.start_game(state)
-        await engine.advance_phase(state)
         GameRepository(session).save_state(state)
         session.commit()
         return build_game_view(
@@ -150,6 +159,9 @@ def create_app() -> FastAPI:
             "day": state.day,
             "phase": state.phase,
             "mock_ai": state.mock_ai,
+            "discussion_mode": state.discussion_mode,
+            "host_player_id": state.host_player_id,
+            "human_seats_ready": all_human_seats_claimed(state),
             "open_human_seats": open_human_seats(state),
             "players": [
                 {
@@ -158,7 +170,7 @@ def create_app() -> FastAPI:
                     "seat": player.seat,
                     "is_human": player.is_human,
                     "alive": player.alive,
-                    "claimed": player.id in state.player_sessions if player.is_human else True,
+                    "claimed": human_seat_claimed(state, player.id) if player.is_human else True,
                 }
                 for player in sorted(state.players, key=lambda item: item.seat)
             ],
@@ -175,6 +187,8 @@ def create_app() -> FastAPI:
             _require_human_session(state, request.player_id, request.token)
             token = request.token
         else:
+            if state.phase != Phase.SETUP:
+                raise HTTPException(status_code=403, detail="遊戲已開始，不能再認領新座位。")
             try:
                 token = claim_human_seat(state, request.player_id, request.player_name).token
             except SessionError as exc:
@@ -186,6 +200,27 @@ def create_app() -> FastAPI:
             request.player_id,
             dev_reveal=settings.dev_reveal,
             session_token=token,
+        )
+
+    @app.post("/api/games/{game_id}/start", response_model=GameView)
+    async def start_game(
+        game_id: str,
+        player_id: str = Query(default="human"),
+        player_token: str | None = Header(default=None, alias="X-Player-Token"),
+        session: Session = Depends(get_db),
+    ) -> GameView:
+        state = _load(session, game_id)
+        _require_human_session(state, player_id, player_token)
+        _require_host(state, player_id)
+        if not all_human_seats_claimed(state):
+            raise HTTPException(status_code=400, detail="所有真人玩家入座後才能開始。")
+        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+        await engine.start_game(state)
+        await engine.advance_phase(state)
+        GameRepository(session).save_state(state)
+        session.commit()
+        return build_game_view(
+            state, player_id, dev_reveal=settings.dev_reveal, session_token=player_token
         )
 
     @app.get("/api/games/{game_id}", response_model=GameView)
@@ -261,6 +296,8 @@ def create_app() -> FastAPI:
     ) -> GameView:
         state = _load(session, game_id)
         _require_human_session(state, player_id, player_token)
+        if not settings.dev_reveal:
+            raise HTTPException(status_code=403, detail="開發者模式未啟用。")
         engine = GameEngine(MockAIProvider())
         await engine.auto_play(state)
         GameRepository(session).save_state(state)
@@ -292,6 +329,84 @@ def create_app() -> FastAPI:
                 speech=request.speech,
                 limit=_reactive_limit_for_speech(request.speech),
             )
+        GameRepository(session).save_state(state)
+        session.commit()
+        return build_game_view(
+            state, request.player_id, dev_reveal=settings.dev_reveal, session_token=player_token
+        )
+
+    @app.post("/api/games/{game_id}/speech-skip", response_model=GameView)
+    async def skip_speech(
+        game_id: str,
+        player_id: str = Query(default="human"),
+        player_token: str | None = Header(default=None, alias="X-Player-Token"),
+        session: Session = Depends(get_db),
+    ) -> GameView:
+        state = _load(session, game_id)
+        _require_human_session(state, player_id, player_token)
+        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+        result = engine.skip_ordered_speech(state, player_id)
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.message)
+        GameRepository(session).save_state(state)
+        session.commit()
+        return build_game_view(
+            state, player_id, dev_reveal=settings.dev_reveal, session_token=player_token
+        )
+
+    @app.post("/api/games/{game_id}/night-target", response_model=GameView)
+    async def night_target(
+        game_id: str,
+        request: NightTargetRequest,
+        player_token: str | None = Header(default=None, alias="X-Player-Token"),
+        session: Session = Depends(get_db),
+    ) -> GameView:
+        state = _load(session, game_id)
+        _require_human_session(state, request.player_id, player_token)
+        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+        result = await engine.submit_night_target(state, request.player_id, request.target_id)
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.message)
+        GameRepository(session).save_state(state)
+        session.commit()
+        return build_game_view(
+            state, request.player_id, dev_reveal=settings.dev_reveal, session_token=player_token
+        )
+
+    @app.post("/api/games/{game_id}/chambermaid-choice", response_model=GameView)
+    async def chambermaid_choice(
+        game_id: str,
+        request: ChambermaidChoiceRequest,
+        player_token: str | None = Header(default=None, alias="X-Player-Token"),
+        session: Session = Depends(get_db),
+    ) -> GameView:
+        state = _load(session, game_id)
+        _require_human_session(state, request.player_id, player_token)
+        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+        result = await engine.submit_chambermaid_choice(
+            state, request.player_id, request.target_ids
+        )
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.message)
+        GameRepository(session).save_state(state)
+        session.commit()
+        return build_game_view(
+            state, request.player_id, dev_reveal=settings.dev_reveal, session_token=player_token
+        )
+
+    @app.post("/api/games/{game_id}/phase-ready", response_model=GameView)
+    async def phase_ready(
+        game_id: str,
+        request: PhaseReadyRequest,
+        player_token: str | None = Header(default=None, alias="X-Player-Token"),
+        session: Session = Depends(get_db),
+    ) -> GameView:
+        state = _load(session, game_id)
+        _require_human_session(state, request.player_id, player_token)
+        engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
+        result = await engine.mark_phase_ready(state, request.player_id)
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.message)
         GameRepository(session).save_state(state)
         session.commit()
         return build_game_view(
@@ -449,7 +564,15 @@ def create_app() -> FastAPI:
         return "\n".join(lines)
 
     @app.delete("/api/games/{game_id}", response_model=ActionResponse)
-    def delete_game(game_id: str, session: Session = Depends(get_db)) -> ActionResponse:
+    def delete_game(
+        game_id: str,
+        player_id: str = Query(default="human"),
+        player_token: str | None = Header(default=None, alias="X-Player-Token"),
+        session: Session = Depends(get_db),
+    ) -> ActionResponse:
+        state = _load(session, game_id)
+        _require_human_session(state, player_id, player_token)
+        _require_host(state, player_id)
         GameRepository(session).delete_game(game_id)
         session.commit()
         return ActionResponse(ok=True, message="遊戲紀錄已刪除。")
@@ -477,6 +600,11 @@ def _require_human_session(state: Any, player_id: str, token: str | None) -> Non
         authenticate_human_seat(state, player_id, token)
     except (KeyError, SessionError) as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_host(state: Any, player_id: str) -> None:
+    if player_id != state.host_player_id:
+        raise HTTPException(status_code=403, detail="只有房主可以執行這個動作。")
 
 
 def _reactive_limit_for_speech(speech: str) -> int:

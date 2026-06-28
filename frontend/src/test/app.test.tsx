@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import App, { GameScreen } from "../App";
@@ -49,6 +49,13 @@ describe("setup", () => {
     const body = JSON.parse(createCall?.[1]?.body as string);
     expect(body.seed).toBeNull();
     expect(body.human_count).toBe(1);
+    expect(body.discussion_mode).toBe("ordered");
+    expect(body.shuffle_seats_on_start).toBe(true);
+    expect(body.night_seconds).toBe(90);
+    expect(body.day_discussion_seconds).toBe(240);
+    expect(body.private_chat_seconds).toBe(180);
+    expect(body.nominations_seconds).toBe(180);
+    expect(body.voting_seconds).toBe(60);
     expect(body.mock_ai).toBe(false);
   });
 });
@@ -154,12 +161,8 @@ describe("game screen", () => {
     expect(screen.getByText("提名與投票")).toBeInTheDocument();
     expect(screen.getAllByText(/AI 自主行動/).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("ai table status")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "AI 自主一步" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "跑到需要我決策" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "AI 自主一步" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "跑到需要我決策" })).toBeNull();
     expect(screen.getByRole("button", { name: "提名" })).toBeInTheDocument();
   });
 
@@ -216,6 +219,156 @@ describe("game screen", () => {
         body: JSON.stringify({ player_id: "human", vote: true }),
         headers: expect.objectContaining({ "X-Player-Token": "test-token" }),
       }),
+    );
+  });
+
+  test("night target prompt lets the human choose a target", async () => {
+    const base = makeGameView();
+    const view = makeGameView({
+      public: {
+        ...base.public,
+        phase: "NIGHT",
+      },
+      private: {
+        ...base.private,
+        legal_actions: ["night_target"],
+        pending_actions: [
+          {
+            action: "night_target",
+            prompt: "choose one",
+            target_count: 1,
+            valid_target_ids: ["human", "ai_1"],
+          },
+        ],
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => makeGameView() });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <GameScreen
+        view={view}
+        busy={false}
+        error=""
+        setView={setView}
+        run={run}
+        leave={vi.fn()}
+      />,
+    );
+
+    const select = screen.getByLabelText("night target");
+    await userEvent.selectOptions(select, "ai_1");
+    await userEvent.click(
+      within(select.closest("form") as HTMLElement).getByRole("button"),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/games/game-1/night-target",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ player_id: "human", target_id: "ai_1" }),
+          headers: expect.objectContaining({ "X-Player-Token": "test-token" }),
+        }),
+      ),
+    );
+  });
+
+  test("chambermaid prompt submits exactly the selected two targets", async () => {
+    const base = makeGameView();
+    const view = makeGameView({
+      public: {
+        ...base.public,
+        phase: "FIRST_NIGHT",
+      },
+      private: {
+        ...base.private,
+        legal_actions: ["chambermaid_choice"],
+        pending_actions: [
+          {
+            action: "chambermaid_choice",
+            prompt: "choose two",
+            target_count: 2,
+            valid_target_ids: ["ai_1", "ai_3", "ai_4"],
+          },
+        ],
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => makeGameView() });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <GameScreen
+        view={view}
+        busy={false}
+        error=""
+        setView={setView}
+        run={run}
+        leave={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByLabelText("chambermaid target ai_1"));
+    await userEvent.click(screen.getByLabelText("chambermaid target ai_3"));
+    await userEvent.click(
+      within(
+        screen
+          .getByLabelText("chambermaid target ai_1")
+          .closest("form") as HTMLElement,
+      ).getByRole("button"),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/games/game-1/chambermaid-choice",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            player_id: "human",
+            target_ids: ["ai_1", "ai_3"],
+          }),
+          headers: expect.objectContaining({ "X-Player-Token": "test-token" }),
+        }),
+      ),
+    );
+  });
+
+  test("phase ready button marks the human as done", async () => {
+    const base = makeGameView();
+    const view = makeGameView({
+      private: {
+        ...base.private,
+        legal_actions: ["phase_ready"],
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => makeGameView() });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <GameScreen
+        view={view}
+        busy={false}
+        error=""
+        setView={setView}
+        run={run}
+        leave={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByLabelText("phase ready"));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/games/game-1/phase-ready",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ player_id: "human" }),
+          headers: expect.objectContaining({ "X-Player-Token": "test-token" }),
+        }),
+      ),
     );
   });
 

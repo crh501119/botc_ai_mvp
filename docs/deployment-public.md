@@ -1,6 +1,6 @@
 # 公開部署指南
 
-這份指南的目標是讓知道網址的人可以加入同一局。請先理解目前安全邊界：這是私人朋友桌，不是大型公開平台。知道遊戲網址的人可以進 lobby，未認領的真人座位可被認領；座位認領後會用瀏覽器保存的 session token 保護。
+這份指南的目標是讓知道網址的人可以加入同一局。請先理解目前安全邊界：這已經有多人等待室、房主開始、座位 token、SETUP 不露角色與開發者模式關閉，但仍是私人朋友桌底座，不是完整商用大型公開平台。知道遊戲網址的人可以進 lobby，未認領的真人座位可被認領；座位認領後會用瀏覽器保存的 session token 保護。
 
 ## 最推薦路線：VPS + Docker Compose + HTTPS 反向代理
 
@@ -63,7 +63,7 @@ Cloudflare Tunnel 適合不想直接開防火牆 port 的情況。
 - 正式放到網路上請一定使用 HTTPS，否則 session token 可能被攔截。
 - `DEV_REVEAL=false` 必須保持關閉。
 - 不要把 `.env`、SQLite 資料庫或 transcript 私下資訊提交到 git。
-- SQLite 適合小型朋友桌；若要長期多人公開服務，下一步應改成 PostgreSQL、加入帳號/邀請碼與更嚴格的 action lock。
+- SQLite 適合小型朋友桌；若要長期多人公開服務，下一步應改成 PostgreSQL、加入帳號/邀請碼、管理員工具、濫用處理、WebSocket/SSE 與更嚴格的 per-game action lock。
 - 建議定期備份 Docker volume 或 SQLite 檔。
 
 ## 更新程式

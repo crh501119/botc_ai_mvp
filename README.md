@@ -7,7 +7,9 @@ Python rules engine, and a React UI.
 The app supports Mock AI offline play, OpenAI-backed AI players, share-link multiplayer
 rooms, save/resume through SQLite, postgame reveal, transcript export, and estimated API
 usage tracking. See [README.zh-TW.md](README.zh-TW.md) for full setup instructions and
-[docs/deployment-public.md](docs/deployment-public.md) for public URL deployment notes.
+[docs/deployment-public.md](docs/deployment-public.md) for public URL deployment notes. For
+the path from private friend tables to a larger public service, see
+[docs/public-platform-hardening.md](docs/public-platform-hardening.md).
 
 ## Quick Start
 

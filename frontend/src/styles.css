@@ -120,6 +120,21 @@ label {
   line-height: 1.45;
 }
 
+.timer-grid,
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  border: 1px solid #dedfd8;
+  border-radius: 6px;
+  padding: 0.65rem;
+}
+
+.timer-grid legend {
+  padding: 0 0.35rem;
+  color: #5f655c;
+}
+
 .join-panel {
   display: grid;
   gap: 0.75rem;
@@ -133,6 +148,21 @@ label {
 
 .seat-list button {
   text-align: left;
+}
+
+.table-gate {
+  width: min(1500px, calc(100% - 2rem));
+  margin: 0 auto 1rem;
+}
+
+.seat-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  border: 1px solid #d8d9d1;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  background: #f8f8f4;
 }
 
 .share-link {
@@ -437,6 +467,7 @@ label {
   .setup,
   .layout,
   .live-strip,
+  .table-gate,
   .notice {
     width: min(100% - 1rem, 1500px);
   }
@@ -455,6 +486,11 @@ label {
   }
 
   .inline-form {
+    grid-template-columns: 1fr;
+  }
+
+  .timer-grid,
+  .choice-grid {
     grid-template-columns: 1fr;
   }
 

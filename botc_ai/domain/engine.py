@@ -4,17 +4,19 @@ import random
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from botc_ai.ai.provider import AIProvider, BudgetExceeded, MockAIProvider
 from botc_ai.domain.artist import evaluate_artist_query, parse_artist_question
 from botc_ai.domain.models import (
     AIMemory,
     AudienceScope,
+    DiscussionMode,
     GameResult,
     NominationRecord,
     Phase,
     PlayerTruth,
+    TargetPrompt,
     TransformationEvent,
     TruthState,
     VoteRecord,
@@ -28,6 +30,7 @@ from botc_ai.domain.rules import (
     seat_order,
     vote_threshold,
 )
+from botc_ai.domain.sessions import all_human_seats_claimed
 from botc_ai.domain.storyteller import AIStorytellerPolicy
 
 FIRST_NIGHT_INFO_ROLES = {"clockmaker", "investigator", "empath", "chambermaid"}
@@ -54,10 +57,21 @@ class GameEngine:
     async def start_game(self, state: TruthState) -> TruthState:
         if state.phase != Phase.SETUP:
             return state
-        state.phase = Phase.FIRST_NIGHT
+        if not all_human_seats_claimed(state):
+            self._set_ai_status(state, "等待所有真人玩家加入後才能開始。")
+            return state
+        self._finalize_starting_seats(state)
+        state.add_event(
+            "六人 No Greater Joy 開局。惡魔與爪牙在此 Teensyville 局中不互認，也沒有惡魔 bluff。",
+            scope=AudienceScope.PUBLIC,
+            type="game_start",
+        )
+        self._enter_phase(state, Phase.FIRST_NIGHT)
         state.last_night_deaths = []
-        await self._resolve_night_information(state, first_night=True)
-        state.phase = Phase.DAWN
+        completed = await self._resolve_night_information(state, first_night=True)
+        if not completed:
+            return state
+        self._enter_phase(state, Phase.DAWN)
         state.add_event("第一夜結束，黎明到來。", scope=AudienceScope.PUBLIC, type="dawn")
         return state
 
@@ -69,15 +83,14 @@ class GameEngine:
             return await self.start_game(state)
         if state.phase == Phase.DAWN:
             self._announce_dawn(state)
-            state.phase = Phase.DAY_DISCUSSION
-            await self.run_public_discussion(state, rounds=1, speaker_limit=1)
+            await self._enter_day_discussion(state)
             return state
         if state.phase == Phase.DAY_DISCUSSION:
-            state.phase = Phase.PRIVATE_CHAT
+            self._enter_phase(state, Phase.PRIVATE_CHAT)
             await self.run_ai_private_chats(state, limit=2)
             return state
         if state.phase == Phase.PRIVATE_CHAT:
-            state.phase = Phase.NOMINATIONS
+            self._enter_phase(state, Phase.NOMINATIONS)
             return state
         if state.phase == Phase.NOMINATIONS:
             created = await self.run_ai_nomination_once(state, wait_for_human_vote=True)
@@ -99,6 +112,8 @@ class GameEngine:
             state.phase = Phase.GAME_OVER
             self._set_ai_status(state, "遊戲已結束。")
             return RuleResult(True, "遊戲已結束。")
+        if self._phase_time_expired(state):
+            return await self._resolve_phase_timeout(state)
         now = datetime.now(UTC)
         if state.last_ai_tick_at is not None:
             elapsed = (now - state.last_ai_tick_at).total_seconds()
@@ -109,20 +124,20 @@ class GameEngine:
         state.last_ai_tick_at = now
 
         if state.phase == Phase.SETUP:
-            self._set_ai_status(state, "AI 說書人正在完成開局。")
-            await self.start_game(state)
-            return RuleResult(True, "AI 說書人完成開局。")
+            self._set_ai_status(state, "等待房主開始遊戲。")
+            return RuleResult(True, "等待房主開始遊戲。")
         if state.phase == Phase.DAWN:
             self._set_ai_status(state, "AI 正在聽黎明公布並整理第一輪說法。")
             self._announce_dawn(state)
-            state.phase = Phase.DAY_DISCUSSION
-            await self.run_public_discussion(state, rounds=1, speaker_limit=1)
+            await self._enter_day_discussion(state)
             return RuleResult(True, "黎明後開始公開討論。")
         if state.phase == Phase.DAY_DISCUSSION:
+            if state.discussion_mode == DiscussionMode.ORDERED:
+                return await self._ordered_discussion_tick(state)
             if state.discussion_rounds_today < 2:
                 await self.run_public_discussion(state, rounds=1, speaker_limit=1)
                 return RuleResult(True, "AI 完成一段公開討論。")
-            state.phase = Phase.PRIVATE_CHAT
+            self._enter_phase(state, Phase.PRIVATE_CHAT)
             state.add_event(
                 "公開討論告一段落，進入私聊時間。", scope=AudienceScope.PUBLIC, type="phase"
             )
@@ -132,7 +147,7 @@ class GameEngine:
             await self.run_ai_private_chats(state, limit=2)
             ai_count = sum(not player.is_human for player in state.players)
             if len(set(state.ai_private_chat_initiated_today)) >= ai_count:
-                state.phase = Phase.NOMINATIONS
+                self._enter_phase(state, Phase.NOMINATIONS)
                 state.add_event(
                     "私聊時間結束，進入提名階段。",
                     scope=AudienceScope.PUBLIC,
@@ -185,13 +200,12 @@ class GameEngine:
             steps += 1
             if state.phase == Phase.DAWN:
                 self._announce_dawn(state)
-                state.phase = Phase.DAY_DISCUSSION
-                await self.run_public_discussion(state)
+                await self._enter_day_discussion(state, opening_speaker_limit=None)
             elif state.phase == Phase.DAY_DISCUSSION:
-                state.phase = Phase.PRIVATE_CHAT
+                self._enter_phase(state, Phase.PRIVATE_CHAT)
                 await self.run_ai_private_chats(state)
             elif state.phase == Phase.PRIVATE_CHAT:
-                state.phase = Phase.NOMINATIONS
+                self._enter_phase(state, Phase.NOMINATIONS)
             elif state.phase == Phase.NOMINATIONS:
                 created = await self.run_ai_nomination_once(state, wait_for_human_vote=False)
                 if not created:
@@ -203,7 +217,7 @@ class GameEngine:
                 if pending:
                     await self.resolve_vote(state, pending.id, human_vote=False)
                 else:
-                    state.phase = Phase.NOMINATIONS
+                    self._enter_phase(state, Phase.NOMINATIONS)
             elif state.phase == Phase.EXECUTION:
                 await self.end_day_or_game(state)
             elif state.phase == Phase.NIGHT:
@@ -220,6 +234,9 @@ class GameEngine:
     async def run_public_discussion(
         self, state: TruthState, rounds: int = 2, speaker_limit: int | None = None
     ) -> None:
+        if state.discussion_mode == DiscussionMode.ORDERED:
+            self._ensure_ordered_speaker(state)
+            return
         for _ in range(rounds):
             speakers = self._discussion_speakers(state, speaker_limit=speaker_limit)
             for player in speakers:
@@ -233,9 +250,85 @@ class GameEngine:
                 state.discussion_speakers_today = []
         self._set_ai_status(state, "公開討論暫停，等待下一位玩家行動。")
 
+    async def _enter_day_discussion(
+        self, state: TruthState, *, opening_speaker_limit: int | None = 1
+    ) -> None:
+        self._enter_phase(state, Phase.DAY_DISCUSSION)
+        state.ordered_speaker_id = None
+        if state.discussion_mode == DiscussionMode.ORDERED:
+            self._ensure_ordered_speaker(state)
+            return
+        await self.run_public_discussion(state, rounds=1, speaker_limit=opening_speaker_limit)
+
+    async def _ordered_discussion_tick(self, state: TruthState) -> RuleResult:
+        speaker = self._ensure_ordered_speaker(state)
+        if speaker is None:
+            return RuleResult(True, "順序發言已完成。")
+        if speaker.is_human:
+            self._set_ai_status(state, f"等待 {speaker.name} 的發言回合。", speaker.id)
+            return RuleResult(True, "等待真人發言。")
+        spoken = await self._emit_ai_public_speech(state, speaker)
+        if spoken:
+            self._advance_ordered_speaker(state, speaker.id)
+        return RuleResult(True, f"{speaker.name} 完成發言。")
+
+    def _ensure_ordered_speaker(self, state: TruthState) -> PlayerTruth | None:
+        if state.phase != Phase.DAY_DISCUSSION or state.discussion_mode != DiscussionMode.ORDERED:
+            return None
+        if state.ordered_speaker_id is not None:
+            try:
+                return state.by_id(state.ordered_speaker_id)
+            except KeyError:
+                state.ordered_speaker_id = None
+        ordered = seat_order(state)
+        spoken = set(state.discussion_speakers_today)
+        next_player = next((player for player in ordered if player.id not in spoken), None)
+        if next_player is None:
+            state.discussion_rounds_today += 1
+            state.discussion_speakers_today = []
+            if state.discussion_rounds_today >= 2:
+                state.ordered_speaker_id = None
+                self._enter_phase(state, Phase.PRIVATE_CHAT)
+                state.add_event(
+                    "順序發言兩輪結束，進入私聊時間。",
+                    scope=AudienceScope.PUBLIC,
+                    type="phase",
+                )
+                return None
+            next_player = ordered[0] if ordered else None
+        state.ordered_speaker_id = next_player.id if next_player else None
+        if next_player is not None:
+            self._set_ai_status(state, f"輪到 {next_player.name} 發言。", next_player.id)
+        return next_player
+
+    def _advance_ordered_speaker(self, state: TruthState, player_id: str) -> None:
+        if player_id not in state.discussion_speakers_today:
+            state.discussion_speakers_today.append(player_id)
+        state.ordered_speaker_id = None
+        self._ensure_ordered_speaker(state)
+
+    def skip_ordered_speech(self, state: TruthState, player_id: str) -> RuleResult:
+        if state.phase != Phase.DAY_DISCUSSION or state.discussion_mode != DiscussionMode.ORDERED:
+            return RuleResult(False, "目前不是順序發言階段。")
+        speaker = self._ensure_ordered_speaker(state)
+        if speaker is None:
+            return RuleResult(False, "目前沒有等待中的發言者。")
+        if speaker.id != player_id:
+            return RuleResult(False, "尚未輪到你發言。")
+        state.add_event(
+            f"{_seat_label(speaker)} 略過發言。",
+            scope=AudienceScope.PUBLIC,
+            type="speech_skip",
+            actor_id=speaker.id,
+        )
+        self._advance_ordered_speaker(state, speaker.id)
+        return RuleResult(True, "已略過本輪發言。")
+
     async def run_reactive_discussion(
         self, state: TruthState, *, trigger_player_id: str, speech: str, limit: int = 2
     ) -> None:
+        if state.discussion_mode == DiscussionMode.ORDERED and state.phase == Phase.DAY_DISCUSSION:
+            return
         responders = self._reactive_speakers(
             state, trigger_player_id=trigger_player_id, speech=speech, limit=limit
         )
@@ -290,9 +383,22 @@ class GameEngine:
         self._set_ai_status(state, "AI 私聊分段完成，等待下一段桌面節奏。")
 
     def _needs_human_decision(self, state: TruthState) -> bool:
+        ordered_speaker = (
+            state.by_id(state.ordered_speaker_id)
+            if state.ordered_speaker_id is not None
+            and any(player.id == state.ordered_speaker_id for player in state.players)
+            else None
+        )
         return (
             state.result is not None
+            or state.phase == Phase.SETUP
             or state.phase == Phase.VOTING
+            or (
+                state.phase == Phase.DAY_DISCUSSION
+                and state.discussion_mode == DiscussionMode.ORDERED
+                and ordered_speaker is not None
+                and ordered_speaker.is_human
+            )
             or (state.pending_klutz_id is not None and state.by_id(state.pending_klutz_id).is_human)
             or state.ai_budget_paused
         )
@@ -304,7 +410,9 @@ class GameEngine:
             len(state.events),
             len(state.nominations),
             len(state.votes),
+            len(state.ai_private_chat_initiated_today),
             state.pending_klutz_id,
+            state.ordered_speaker_id,
             state.result is not None,
         )
 
@@ -388,12 +496,175 @@ class GameEngine:
         state.ai_last_status = message
         state.ai_active_player_id = active_player_id
 
+    def _enter_phase(self, state: TruthState, phase: Phase) -> None:
+        if state.phase != phase:
+            state.phase = phase
+            state.phase_started_at = datetime.now(UTC)
+            state.phase_ready = {}
+        duration = self._phase_duration_seconds(state, phase)
+        state.phase_deadline_at = (
+            state.phase_started_at + timedelta(seconds=duration) if duration is not None else None
+        )
+
+    def _phase_duration_seconds(self, state: TruthState, phase: Phase) -> int | None:
+        if phase in {Phase.FIRST_NIGHT, Phase.NIGHT}:
+            return state.night_duration_seconds
+        if phase == Phase.DAY_DISCUSSION:
+            return state.day_discussion_duration_seconds
+        if phase == Phase.PRIVATE_CHAT:
+            return state.private_chat_duration_seconds
+        if phase == Phase.NOMINATIONS:
+            return state.nominations_duration_seconds
+        if phase == Phase.VOTING:
+            return state.voting_duration_seconds
+        return None
+
+    def _phase_time_expired(self, state: TruthState) -> bool:
+        return state.phase_deadline_at is not None and datetime.now(UTC) >= state.phase_deadline_at
+
+    async def _resolve_phase_timeout(self, state: TruthState) -> RuleResult:
+        if state.phase in {Phase.DAY_DISCUSSION, Phase.PRIVATE_CHAT}:
+            await self.advance_phase(state)
+            return RuleResult(True, "階段時間到，已自動推進。")
+        if state.phase == Phase.NOMINATIONS:
+            await self.execute_top_candidate(state)
+            return RuleResult(True, "提名時間到，已結算今日處決。")
+        if state.phase == Phase.VOTING:
+            nomination = next(
+                (item for item in state.nominations if item.day == state.day and not item.resolved),
+                None,
+            )
+            if nomination is not None:
+                for player in seat_order(state):
+                    if not player.is_human or not (player.alive or player.ghost_vote_available):
+                        continue
+                    if not self._has_voted(state, nomination.id, player.id):
+                        self._record_vote(state, nomination, player, False, "時間到，未投票。")
+                await self._resolve_remaining_ai_votes(state, nomination)
+            return RuleResult(True, "投票時間到，未投真人視為不投。")
+        if state.phase in {Phase.FIRST_NIGHT, Phase.NIGHT}:
+            for player_id, prompt in list(state.pending_action_prompts.items()):
+                fallback = prompt.valid_target_ids[: prompt.target_count]
+                if len(fallback) == prompt.target_count:
+                    state.night_action_choices[
+                        self._choice_key(state, player_id, prompt.action)
+                    ] = fallback
+                state.pending_action_prompts.pop(player_id, None)
+            if state.phase == Phase.FIRST_NIGHT:
+                completed = await self._resolve_night_information(state, first_night=True)
+                if completed:
+                    self._enter_phase(state, Phase.DAWN)
+                    state.add_event(
+                        "第一夜結束，黎明到來。", scope=AudienceScope.PUBLIC, type="dawn"
+                    )
+            else:
+                await self.run_night(state)
+            return RuleResult(True, "夜晚時間到，已使用安全預設並繼續。")
+        return RuleResult(True, "目前階段沒有逾時動作。")
+
+    def _choice_key(self, state: TruthState, player_id: str, action: str) -> str:
+        return f"{state.day}:{player_id}:{action}"
+
+    def _get_action_choice(
+        self, state: TruthState, player_id: str, action: str
+    ) -> list[str] | None:
+        return state.night_action_choices.get(self._choice_key(state, player_id, action))
+
+    def _set_pending_prompt(self, state: TruthState, player_id: str, prompt: TargetPrompt) -> None:
+        state.pending_action_prompts[player_id] = prompt
+        self._set_ai_status(state, prompt.prompt, player_id)
+
+    def _store_action_choice(
+        self, state: TruthState, player_id: str, action: str, target_ids: list[str]
+    ) -> None:
+        prompt = state.pending_action_prompts.get(player_id)
+        if prompt is None or prompt.action != action:
+            raise ValueError("目前沒有等待中的目標選擇。")
+        if len(target_ids) != prompt.target_count:
+            raise ValueError(f"必須選擇 {prompt.target_count} 名目標。")
+        if len(set(target_ids)) != len(target_ids):
+            raise ValueError("不能重複選擇同一名玩家。")
+        invalid = [
+            target_id for target_id in target_ids if target_id not in prompt.valid_target_ids
+        ]
+        if invalid:
+            raise ValueError("包含非法目標。")
+        state.night_action_choices[self._choice_key(state, player_id, action)] = target_ids
+        state.pending_action_prompts.pop(player_id, None)
+
+    async def submit_night_target(
+        self, state: TruthState, player_id: str, target_id: str
+    ) -> RuleResult:
+        try:
+            self._store_action_choice(state, player_id, "night_target", [target_id])
+        except ValueError as exc:
+            return RuleResult(False, str(exc))
+        await self.run_night(state)
+        return RuleResult(True, "夜晚目標已送出。")
+
+    async def submit_chambermaid_choice(
+        self, state: TruthState, player_id: str, target_ids: list[str]
+    ) -> RuleResult:
+        try:
+            self._store_action_choice(state, player_id, "chambermaid_choice", target_ids)
+        except ValueError as exc:
+            return RuleResult(False, str(exc))
+        if state.phase == Phase.FIRST_NIGHT:
+            completed = await self._resolve_night_information(state, first_night=True)
+            if completed:
+                state.pending_action_prompts = {}
+                state.night_action_choices = {}
+                self._enter_phase(state, Phase.DAWN)
+                state.add_event("第一夜結束，黎明到來。", scope=AudienceScope.PUBLIC, type="dawn")
+        elif state.phase == Phase.NIGHT:
+            await self.run_night(state)
+        return RuleResult(True, "侍女目標已送出。")
+
+    async def mark_phase_ready(self, state: TruthState, player_id: str) -> RuleResult:
+        player = state.by_id(player_id)
+        if not player.is_human:
+            return RuleResult(False, "只有真人玩家可以標記完成。")
+        if state.phase not in {Phase.DAY_DISCUSSION, Phase.PRIVATE_CHAT, Phase.NOMINATIONS}:
+            return RuleResult(False, "目前階段不能標記完成。")
+        ready = state.phase_ready.setdefault(state.phase.value, [])
+        if player_id not in ready:
+            ready.append(player_id)
+        if self._all_humans_ready_for_phase(state):
+            await self.advance_phase(state)
+        return RuleResult(True, "已標記完成。")
+
+    def _all_humans_ready_for_phase(self, state: TruthState) -> bool:
+        ready = set(state.phase_ready.get(state.phase.value, []))
+        human_ids = {player.id for player in state.players if player.is_human}
+        return human_ids.issubset(ready)
+
+    def _has_today_event(self, state: TruthState, player_id: str, event_type: str) -> bool:
+        return any(
+            event.day == state.day and event.type == event_type and player_id in event.target_ids
+            for event in state.events
+        )
+
+    def _finalize_starting_seats(self, state: TruthState) -> None:
+        if state.seats_finalized:
+            return
+        if state.shuffle_seats_on_start:
+            rng = random.Random((state.seed or 0) + 7919)
+            shuffled = list(state.players)
+            rng.shuffle(shuffled)
+            for seat, player in enumerate(shuffled):
+                player.seat = seat
+        state.seats_finalized = True
+
     def add_human_public_speech(self, state: TruthState, player_id: str, speech: str) -> RuleResult:
         player = state.by_id(player_id)
         if not speech.strip():
             return RuleResult(False, "發言不可為空。")
         if state.phase not in PUBLIC_SPEECH_PHASES:
             return RuleResult(False, "現在不是公開討論時間，夜晚與處決流程不能在公頻發言。")
+        if state.phase == Phase.DAY_DISCUSSION and state.discussion_mode == DiscussionMode.ORDERED:
+            speaker = self._ensure_ordered_speaker(state)
+            if speaker is None or speaker.id != player.id:
+                return RuleResult(False, "順序發言模式中，尚未輪到你發言。")
         state.add_event(
             f"{_seat_label(player)}：{speech.strip()}",
             scope=AudienceScope.PUBLIC,
@@ -401,7 +672,10 @@ class GameEngine:
             actor_id=player.id,
         )
         if state.phase == Phase.DAY_DISCUSSION:
-            state.discussion_rounds_today = min(state.discussion_rounds_today, 1)
+            if state.discussion_mode == DiscussionMode.ORDERED:
+                self._advance_ordered_speaker(state, player.id)
+            else:
+                state.discussion_rounds_today = min(state.discussion_rounds_today, 1)
         self._apply_claim(state, player.id, self._extract_claimed_role(speech))
         self._set_ai_status(state, "AI 正在消化你的公開發言。")
         return RuleResult(True, "已公開發言。")
@@ -477,7 +751,7 @@ class GameEngine:
                 type="defense",
                 actor_id=nominee.id,
             )
-        state.phase = Phase.VOTING
+        self._enter_phase(state, Phase.VOTING)
         return nomination
 
     async def run_ai_nomination_once(self, state: TruthState, *, wait_for_human_vote: bool) -> bool:
@@ -566,7 +840,7 @@ class GameEngine:
             target_ids=[nominee.id],
         )
         self._remember_vote_result(state, nomination)
-        state.phase = Phase.NOMINATIONS
+        self._enter_phase(state, Phase.NOMINATIONS)
         return nomination
 
     async def cast_human_vote(
@@ -670,7 +944,7 @@ class GameEngine:
             target_ids=[nominee.id],
         )
         self._remember_vote_result(state, nomination)
-        state.phase = Phase.NOMINATIONS
+        self._enter_phase(state, Phase.NOMINATIONS)
 
     def _all_required_human_votes_cast(self, state: TruthState, nomination_id: str) -> bool:
         return all(
@@ -687,14 +961,14 @@ class GameEngine:
 
     async def execute_top_candidate(self, state: TruthState) -> None:
         if state.execution_done_today:
-            state.phase = Phase.EXECUTION
+            self._enter_phase(state, Phase.EXECUTION)
             return
         valid = [n for n in state.nominations if n.day == state.day and n.eligible_for_execution]
         if not valid:
             state.add_event(
                 "今日沒有玩家達到處決門檻。", scope=AudienceScope.PUBLIC, type="no_execution"
             )
-            state.phase = Phase.EXECUTION
+            self._enter_phase(state, Phase.EXECUTION)
             return
         highest = max(n.votes for n in valid)
         leaders = [n for n in valid if n.votes == highest]
@@ -702,12 +976,12 @@ class GameEngine:
             state.add_event(
                 "最高票平手，今日無人被處決。", scope=AudienceScope.PUBLIC, type="tie_no_execution"
             )
-            state.phase = Phase.EXECUTION
+            self._enter_phase(state, Phase.EXECUTION)
             return
         target = state.by_id(leaders[0].nominee_id)
         await self.kill_player(state, target.id, cause="execution", public=True, auto_klutz=True)
         state.execution_done_today = True
-        state.phase = Phase.EXECUTION
+        self._enter_phase(state, Phase.EXECUTION)
 
     async def end_day_or_game(self, state: TruthState) -> None:
         if state.result is not None:
@@ -719,37 +993,71 @@ class GameEngine:
         state.execution_done_today = False
         state.discussion_rounds_today = 0
         state.discussion_speakers_today = []
+        state.ordered_speaker_id = None
         state.ai_private_chat_initiated_today = []
+        state.pending_action_prompts = {}
+        state.night_action_choices = {}
+        state.night_progress = []
         self._set_ai_status(state, "新的一天即將開始。")
         state.day += 1
         if state.day > state.max_days:
             await self._resolve_max_day_safety(state)
             return
-        state.phase = Phase.NIGHT
+        self._enter_phase(state, Phase.NIGHT)
 
     async def run_night(self, state: TruthState) -> None:
         if state.result is not None:
             state.phase = Phase.GAME_OVER
             return
-        state.last_night_deaths = []
-        state.phase = Phase.NIGHT
-        demon = state.demon()
-        if demon is not None:
-            valid = [player.id for player in state.living()]
-            action = await self.provider.night_target(state, demon.id, valid)
-            target_id = action.target_id if action.target_id in valid else demon.id
-            await self.kill_player(
-                state,
-                target_id,
-                cause="imp_kill",
-                public=False,
-                demon_attack=True,
-                demon_self_kill=target_id == demon.id,
-                auto_klutz=True,
-            )
+        self._enter_phase(state, Phase.NIGHT)
+        if "night_started" not in state.night_progress:
+            state.last_night_deaths = []
+            state.night_progress.append("night_started")
+
+        if "demon_kill" not in state.night_progress:
+            demon = state.demon()
+            if demon is not None:
+                valid = [player.id for player in state.living()]
+                if demon.is_human:
+                    choice = self._get_action_choice(state, demon.id, "night_target")
+                    if choice is None:
+                        self._set_pending_prompt(
+                            state,
+                            demon.id,
+                            TargetPrompt(
+                                action="night_target",
+                                prompt="你是小惡魔，請選擇今晚要攻擊的存活玩家；可以選自己。",
+                                target_count=1,
+                                valid_target_ids=valid,
+                            ),
+                        )
+                        return
+                    target_id = choice[0] if choice and choice[0] in valid else demon.id
+                else:
+                    action = await self.provider.night_target(state, demon.id, valid)
+                    target_id = action.target_id if action.target_id in valid else demon.id
+                await self.kill_player(
+                    state,
+                    target_id,
+                    cause="imp_kill",
+                    public=False,
+                    demon_attack=True,
+                    demon_self_kill=target_id == demon.id,
+                    auto_klutz=True,
+                )
+            state.night_progress.append("demon_kill")
+
+        if state.result is None and "night_info" not in state.night_progress:
+            completed = await self._resolve_night_information(state, first_night=False)
+            if not completed:
+                return
+            state.night_progress.append("night_info")
+
         if state.result is None:
-            await self._resolve_night_information(state, first_night=False)
-            state.phase = Phase.DAWN
+            state.night_progress = []
+            state.night_action_choices = {}
+            state.pending_action_prompts = {}
+            self._enter_phase(state, Phase.DAWN)
             state.add_event(
                 "夜晚結束，等待黎明公布。",
                 scope=AudienceScope.STORYTELLER_INTERNAL,
@@ -862,7 +1170,7 @@ class GameEngine:
 
         self._check_two_alive(state)
 
-    async def _resolve_night_information(self, state: TruthState, *, first_night: bool) -> None:
+    async def _resolve_night_information(self, state: TruthState, *, first_night: bool) -> bool:
         state.wake_events = [event for event in state.wake_events if event.day != state.day]
         for player in state.living():
             visible_role = player.visible_role
@@ -877,16 +1185,31 @@ class GameEngine:
                 state.wake_events.append(WakeEvent(day=state.day, player_id=demon.id, role="imp"))
 
         for player in state.living():
-            if first_night and player.visible_role == "clockmaker":
+            if (
+                first_night
+                and player.visible_role == "clockmaker"
+                and not self._has_today_event(state, player.id, "clockmaker_info")
+            ):
                 self._resolve_clockmaker(state, player.id)
-            elif first_night and player.visible_role == "investigator":
+            elif (
+                first_night
+                and player.visible_role == "investigator"
+                and not self._has_today_event(state, player.id, "investigator_info")
+            ):
                 self._resolve_investigator(state, player.id)
-            elif player.visible_role == "empath":
+            elif player.visible_role == "empath" and not self._has_today_event(
+                state, player.id, "empath_info"
+            ):
                 self._resolve_empath(state, player.id)
 
         for player in state.living():
-            if player.visible_role == "chambermaid":
-                await self._resolve_chambermaid(state, player.id)
+            if player.visible_role == "chambermaid" and not self._has_today_event(
+                state, player.id, "chambermaid_info"
+            ):
+                completed = await self._resolve_chambermaid(state, player.id)
+                if completed is None:
+                    return False
+        return True
 
     def _resolve_clockmaker(self, state: TruthState, player_id: str) -> int:
         player = state.by_id(player_id)
@@ -967,13 +1290,38 @@ class GameEngine:
         )
         return result
 
-    async def _resolve_chambermaid(self, state: TruthState, player_id: str) -> int:
+    async def _resolve_chambermaid(self, state: TruthState, player_id: str) -> int | None:
         player = state.by_id(player_id)
         valid = [other.id for other in state.living() if other.id != player_id]
         if len(valid) < 2:
             return 0
         if player.is_human:
-            chosen = valid[:2]
+            choice = self._get_action_choice(state, player_id, "chambermaid_choice")
+            if choice is None:
+                self._set_pending_prompt(
+                    state,
+                    player_id,
+                    TargetPrompt(
+                        action="chambermaid_choice",
+                        prompt="你是侍女，請選擇兩名存活且不是自己的玩家。",
+                        target_count=2,
+                        valid_target_ids=valid,
+                    ),
+                )
+                return None
+            chosen = [target_id for target_id in choice if target_id in valid][:2]
+            if len(chosen) < 2:
+                self._set_pending_prompt(
+                    state,
+                    player_id,
+                    TargetPrompt(
+                        action="chambermaid_choice",
+                        prompt="請重新選擇兩名合法目標。",
+                        target_count=2,
+                        valid_target_ids=valid,
+                    ),
+                )
+                return None
         else:
             action = await self.provider.chambermaid_choice(state, player_id, valid)
             chosen = [target_id for target_id in action.target_ids if target_id in valid][:2]

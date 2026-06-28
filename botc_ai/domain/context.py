@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from botc_ai.domain.models import (
@@ -19,7 +20,7 @@ from botc_ai.domain.models import (
     script_view,
 )
 from botc_ai.domain.roles import ROLE_SPECS, Alignment
-from botc_ai.domain.sessions import human_seat_claimed
+from botc_ai.domain.sessions import all_human_seats_claimed, human_seat_claimed
 from botc_ai.domain.setup import AI_PERSONAS
 from botc_ai.domain.usage import summarize_usage
 
@@ -77,15 +78,33 @@ def build_public_state(state: TruthState) -> PublicState:
         ai_status=state.ai_last_status,
         ai_active_player_id=state.ai_active_player_id,
         ai_cooldown_seconds=state.ai_cooldown_seconds,
+        phase_started_at=state.phase_started_at,
+        phase_deadline_at=state.phase_deadline_at,
+        phase_remaining_seconds=_phase_remaining_seconds(state),
+        host_player_id=state.host_player_id,
+        discussion_mode=state.discussion_mode,
         discussion_rounds_today=state.discussion_rounds_today,
+        current_speaker_id=state.ordered_speaker_id,
+        human_seats_ready=all_human_seats_claimed(state),
     )
 
 
 def legal_actions_for(state: TruthState, player_id: str) -> list[str]:
     player = state.by_id(player_id)
     actions: list[str] = ["save"]
-    if state.phase in {"DAY_DISCUSSION", "NOMINATIONS"}:
+    pending_prompt = state.pending_action_prompts.get(player_id)
+    if pending_prompt is not None:
+        actions.append(pending_prompt.action)
+    if (
+        state.phase == "SETUP"
+        and player.id == state.host_player_id
+        and all_human_seats_claimed(state)
+    ):
+        actions.append("start_game")
+    if _player_can_public_speak(state, player_id):
         actions.append("public_speech")
+    if state.phase == "DAY_DISCUSSION" and state.ordered_speaker_id == player_id:
+        actions.append("skip_speech")
     if state.phase in {"DAY_DISCUSSION", "PRIVATE_CHAT", "NOMINATIONS"}:
         actions.append("private_chat")
     if state.phase in {"DAWN", "DAY_DISCUSSION", "PRIVATE_CHAT"}:
@@ -102,7 +121,19 @@ def legal_actions_for(state: TruthState, player_id: str) -> list[str]:
         actions.append("artist_question")
     if state.pending_klutz_id == player_id:
         actions.append("klutz_choose")
+    if state.phase in {"DAY_DISCUSSION", "PRIVATE_CHAT", "NOMINATIONS"}:
+        actions.append("phase_ready")
     return actions
+
+
+def _player_can_public_speak(state: TruthState, player_id: str) -> bool:
+    if state.phase == "NOMINATIONS":
+        return True
+    if state.phase != "DAY_DISCUSSION":
+        return False
+    if state.discussion_mode == "ordered":
+        return state.ordered_speaker_id == player_id
+    return True
 
 
 def _player_can_vote_pending_nomination(state: TruthState, player_id: str) -> bool:
@@ -122,7 +153,8 @@ def _player_can_vote_pending_nomination(state: TruthState, player_id: str) -> bo
 
 def build_private_view(state: TruthState, player_id: str) -> PlayerPrivateView:
     player = state.by_id(player_id)
-    role = ROLE_SPECS[player.visible_role]
+    pregame = state.phase == "SETUP"
+    role = ROLE_SPECS[player.visible_role] if not pregame else None
     game_over = state.result is not None
     visible_events = [
         event
@@ -133,6 +165,7 @@ def build_private_view(state: TruthState, player_id: str) -> PlayerPrivateView:
         event
         for event in visible_events
         if event.scope in {AudienceScope.PLAYER_ONLY, AudienceScope.POSTGAME_ONLY}
+        and not (pregame and event.type == "role_info")
     ]
     private_chats = [
         event for event in visible_events if event.scope == AudienceScope.PRIVATE_CHAT_PARTICIPANTS
@@ -144,17 +177,28 @@ def build_private_view(state: TruthState, player_id: str) -> PlayerPrivateView:
         alive=player.alive,
         ghost_vote_available=player.ghost_vote_available,
         role=ScriptRoleView(
-            slug=role.slug,
-            zh_name=role.zh_name,
-            role_type=role.zh_type,
-            ability=role.ability,
+            slug=role.slug if role else "pending",
+            zh_name=role.zh_name if role else "尚未發身分",
+            role_type=role.zh_type if role else "等待",
+            ability=role.ability if role else "所有真人入座並由房主開始後才會揭露。",
         ),
-        apparent_alignment=player.visible_alignment,
+        apparent_alignment=player.visible_alignment if role else Alignment.GOOD,
         private_events=private_events,
         private_chats=private_chats,
         memory=state.ai_memories.get(player_id),
         legal_actions=legal_actions_for(state, player_id),
+        pending_actions=[
+            prompt
+            for owner_id, prompt in state.pending_action_prompts.items()
+            if owner_id == player_id
+        ],
     )
+
+
+def _phase_remaining_seconds(state: TruthState) -> int | None:
+    if state.phase_deadline_at is None:
+        return None
+    return max(0, int((state.phase_deadline_at - datetime.now(UTC)).total_seconds()))
 
 
 def build_postgame_reveal(state: TruthState) -> PostgameReveal:

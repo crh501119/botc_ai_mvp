@@ -43,6 +43,13 @@ type RoleView = {
   ability: string;
 };
 
+type TargetPrompt = {
+  action: string;
+  prompt: string;
+  target_count: number;
+  valid_target_ids: string[];
+};
+
 type Nomination = {
   id: string;
   day: number;
@@ -86,7 +93,14 @@ type GameView = {
     ai_status: string;
     ai_active_player_id?: string | null;
     ai_cooldown_seconds: number;
+    phase_started_at: string;
+    phase_deadline_at?: string | null;
+    phase_remaining_seconds?: number | null;
+    host_player_id: string;
+    discussion_mode: "free" | "ordered";
     discussion_rounds_today: number;
+    current_speaker_id?: string | null;
+    human_seats_ready: boolean;
   };
   private: {
     player_id: string;
@@ -99,6 +113,7 @@ type GameView = {
     private_events: EventView[];
     private_chats: EventView[];
     legal_actions: string[];
+    pending_actions: TargetPrompt[];
   };
   script: RoleView[];
   postgame?: {
@@ -143,6 +158,9 @@ type LobbyView = {
   day: number;
   phase: Phase;
   mock_ai: boolean;
+  discussion_mode: "free" | "ordered";
+  host_player_id: string;
+  human_seats_ready: boolean;
   open_human_seats: string[];
   players: Array<{
     id: string;
@@ -232,6 +250,15 @@ export default function App() {
   const [humanName, setHumanName] = useState("旅人");
   const [joinName, setJoinName] = useState("玩家");
   const [humanCount, setHumanCount] = useState("1");
+  const [discussionMode, setDiscussionMode] = useState<"free" | "ordered">(
+    "ordered",
+  );
+  const [shuffleSeats, setShuffleSeats] = useState(true);
+  const [nightSeconds, setNightSeconds] = useState("90");
+  const [dayDiscussionSeconds, setDayDiscussionSeconds] = useState("240");
+  const [privateChatSeconds, setPrivateChatSeconds] = useState("180");
+  const [nominationsSeconds, setNominationsSeconds] = useState("180");
+  const [votingSeconds, setVotingSeconds] = useState("60");
   const [seed, setSeed] = useState("");
   const [budget, setBudget] = useState("1.00");
   const [mockAi, setMockAi] = useState(true);
@@ -288,6 +315,13 @@ export default function App() {
           body: JSON.stringify({
             human_name: humanName,
             human_count: Number(humanCount),
+            discussion_mode: discussionMode,
+            shuffle_seats_on_start: shuffleSeats,
+            night_seconds: Number(nightSeconds),
+            day_discussion_seconds: Number(dayDiscussionSeconds),
+            private_chat_seconds: Number(privateChatSeconds),
+            nominations_seconds: Number(nominationsSeconds),
+            voting_seconds: Number(votingSeconds),
             seed: seed.trim() ? Number(seed) : null,
             budget_usd: Number(budget),
             mock_ai: mockAi,
@@ -440,6 +474,66 @@ export default function App() {
             </select>
           </label>
           <label>
+            白天發言模式
+            <select
+              value={discussionMode}
+              onChange={(event) =>
+                setDiscussionMode(event.target.value as "free" | "ordered")
+              }
+            >
+              <option value="ordered">順序發言：每人一個回合</option>
+              <option value="free">自由發言：像聊天室</option>
+            </select>
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={shuffleSeats}
+              onChange={(event) => setShuffleSeats(event.target.checked)}
+            />
+            開始時隨機座位
+          </label>
+          <fieldset className="timer-grid">
+            <legend>階段時間（秒）</legend>
+            <label>
+              夜晚
+              <input
+                value={nightSeconds}
+                onChange={(event) => setNightSeconds(event.target.value)}
+              />
+            </label>
+            <label>
+              白天討論
+              <input
+                value={dayDiscussionSeconds}
+                onChange={(event) =>
+                  setDayDiscussionSeconds(event.target.value)
+                }
+              />
+            </label>
+            <label>
+              私聊
+              <input
+                value={privateChatSeconds}
+                onChange={(event) => setPrivateChatSeconds(event.target.value)}
+              />
+            </label>
+            <label>
+              提名
+              <input
+                value={nominationsSeconds}
+                onChange={(event) => setNominationsSeconds(event.target.value)}
+              />
+            </label>
+            <label>
+              投票
+              <input
+                value={votingSeconds}
+                onChange={(event) => setVotingSeconds(event.target.value)}
+              />
+            </label>
+          </fieldset>
+          <label>
             Random seed（留空即隨機）
             <input
               value={seed}
@@ -531,9 +625,13 @@ export function GameScreen({
       (player) => player.alive && player.id !== view.private.player_id,
     )?.id ?? "",
   );
+  const [nightTarget, setNightTarget] = useState("");
+  const [chambermaidTargets, setChambermaidTargets] = useState<string[]>([]);
+  const [klutzTarget, setKlutzTarget] = useState("");
   const [reason, setReason] = useState("我想測試這個說法。");
   const [artistQuestion, setArtistQuestion] = useState("");
   const [budget, setBudget] = useState(String(view.public.usage.budget_usd));
+  const [nowMs, setNowMs] = useState(Date.now());
   const [aiTickStatus, setAiTickStatus] =
     useState("AI 會依本局冷卻時間一位一位發言。");
   const shareLink = gameLink(view.public.game_id);
@@ -553,9 +651,33 @@ export function GameScreen({
   );
   const activeAiName = playerName(view, view.public.ai_active_player_id);
   const tableStatus = view.public.ai_status || aiTickStatus;
+  const currentSpeakerName = playerName(view, view.public.current_speaker_id);
+  const isDeveloper = Boolean(view.dev_reveal);
+  const canStartGame = view.private.legal_actions.includes("start_game");
   const canPublicSpeak = view.private.legal_actions.includes("public_speech");
+  const canSkipSpeech = view.private.legal_actions.includes("skip_speech");
   const canPrivateChat = view.private.legal_actions.includes("private_chat");
   const canVote = view.private.legal_actions.includes("vote_yes");
+  const canPhaseReady = view.private.legal_actions.includes("phase_ready");
+  const canKlutzChoose = view.private.legal_actions.includes("klutz_choose");
+  const nightPrompt = view.private.pending_actions.find(
+    (prompt) => prompt.action === "night_target",
+  );
+  const chambermaidPrompt = view.private.pending_actions.find(
+    (prompt) => prompt.action === "chambermaid_choice",
+  );
+  const klutzTargets = useMemo(
+    () => view.public.players.filter((player) => player.alive),
+    [view.public.players],
+  );
+  const phaseRemainingSeconds = view.public.phase_deadline_at
+    ? Math.max(
+        0,
+        Math.floor(
+          (new Date(view.public.phase_deadline_at).getTime() - nowMs) / 1000,
+        ),
+      )
+    : view.public.phase_remaining_seconds;
   const aiTickIntervalMs = Math.max(
     5000,
     view.public.ai_cooldown_seconds * 1000,
@@ -594,12 +716,50 @@ export function GameScreen({
   }, [view.public.ai_status]);
 
   useEffect(() => {
-    if (busy || view.public.result) return undefined;
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (nightPrompt && !nightPrompt.valid_target_ids.includes(nightTarget)) {
+      setNightTarget(nightPrompt.valid_target_ids[0] ?? "");
+    }
+  }, [nightPrompt, nightTarget]);
+
+  useEffect(() => {
+    if (chambermaidPrompt) {
+      setChambermaidTargets((current) =>
+        current.filter((targetId) =>
+          chambermaidPrompt.valid_target_ids.includes(targetId),
+        ),
+      );
+    }
+  }, [chambermaidPrompt]);
+
+  useEffect(() => {
+    if (!klutzTargets.some((player) => player.id === klutzTarget)) {
+      setKlutzTarget(klutzTargets[0]?.id ?? "");
+    }
+  }, [klutzTarget, klutzTargets]);
+
+  useEffect(() => {
+    if (
+      busy ||
+      view.public.result ||
+      view.public.phase === "SETUP" ||
+      (view.public.discussion_mode === "ordered" &&
+        view.public.current_speaker_id === view.private.player_id)
+    )
+      return undefined;
     let cancelled = false;
     let inFlight = false;
     const interval = window.setInterval(async () => {
       if (inFlight) return;
-      if (view.public.phase === "VOTING" || view.public.phase === "GAME_OVER") {
+      if (
+        view.public.phase === "VOTING" ||
+        view.public.phase === "GAME_OVER" ||
+        view.public.phase === "SETUP"
+      ) {
         setAiTickStatus("AI 已停下，等待真人必要操作。");
         return;
       }
@@ -636,8 +796,11 @@ export function GameScreen({
     effectiveSession.token,
     setView,
     view.public.game_id,
+    view.public.current_speaker_id,
+    view.public.discussion_mode,
     view.public.phase,
     view.public.result,
+    view.private.player_id,
     aiTickIntervalMs,
     pathWithPlayer,
   ]);
@@ -651,54 +814,86 @@ export function GameScreen({
           <small>{tableStatus}</small>
         </div>
         <div className="top-actions">
-          <button
-            disabled={busy}
-            onClick={() =>
-              action(
-                `/api/games/${view.public.game_id}/ai-tick`,
-                undefined,
-                true,
-              )
-            }
-          >
-            AI 自主一步
-          </button>
-          <button
-            disabled={busy}
-            onClick={() =>
-              action(
-                `/api/games/${view.public.game_id}/ai-until-human`,
-                undefined,
-                true,
-              )
-            }
-          >
-            跑到需要我決策
-          </button>
-          <button
-            disabled={busy}
-            onClick={() =>
-              action(
-                `/api/games/${view.public.game_id}/advance`,
-                undefined,
-                true,
-              )
-            }
-          >
-            推進階段
-          </button>
-          <button
-            disabled={busy}
-            onClick={() =>
-              action(
-                `/api/games/${view.public.game_id}/auto-play`,
-                undefined,
-                true,
-              )
-            }
-          >
-            Mock 跑完整局
-          </button>
+          {view.public.phase === "SETUP" ? (
+            <button
+              disabled={busy || !canStartGame}
+              onClick={() =>
+                action(
+                  `/api/games/${view.public.game_id}/start`,
+                  undefined,
+                  true,
+                )
+              }
+            >
+              {view.public.human_seats_ready ? "開始遊戲" : "等待真人入座"}
+            </button>
+          ) : (
+            <button
+              disabled={busy}
+              onClick={() =>
+                action(
+                  `/api/games/${view.public.game_id}/advance`,
+                  undefined,
+                  true,
+                )
+              }
+            >
+              推進階段
+            </button>
+          )}
+          {isDeveloper ? (
+            <>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  action(
+                    `/api/games/${view.public.game_id}/ai-tick`,
+                    undefined,
+                    true,
+                  )
+                }
+              >
+                AI 自主一步
+              </button>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  action(
+                    `/api/games/${view.public.game_id}/ai-until-human`,
+                    undefined,
+                    true,
+                  )
+                }
+              >
+                跑到需要我決策
+              </button>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  action(
+                    `/api/games/${view.public.game_id}/auto-play`,
+                    undefined,
+                    true,
+                  )
+                }
+              >
+                Mock 跑完整局
+              </button>
+            </>
+          ) : null}
+          {canPhaseReady ? (
+            <button
+              aria-label="phase ready"
+              disabled={busy}
+              onClick={() =>
+                action(`/api/games/${view.public.game_id}/phase-ready`, {
+                  player_id: view.private.player_id,
+                })
+              }
+            >
+              我已完成/跳過
+            </button>
+          ) : null}
           <button onClick={leave}>儲存並離開</button>
         </div>
       </header>
@@ -728,6 +923,26 @@ export function GameScreen({
           <strong>{view.public.ai_cooldown_seconds} 秒</strong>
         </div>
         <div>
+          <span>階段倒數</span>
+          <strong>
+            {phaseRemainingSeconds == null
+              ? "不限"
+              : `${phaseRemainingSeconds} 秒`}
+          </strong>
+        </div>
+        <div>
+          <span>發言模式</span>
+          <strong>
+            {view.public.discussion_mode === "ordered" ? "順序" : "自由"}
+          </strong>
+        </div>
+        <div>
+          <span>目前發言</span>
+          <strong>
+            {view.public.current_speaker_id ? currentSpeakerName : "未指定"}
+          </strong>
+        </div>
+        <div>
           <span>AI 模式</span>
           <strong>{view.public.mock_ai ? "Mock" : "OpenAI"}</strong>
         </div>
@@ -736,6 +951,29 @@ export function GameScreen({
           <strong className="share-link">{shareLink}</strong>
         </div>
       </section>
+
+      {view.public.phase === "SETUP" ? (
+        <section className="panel table-gate">
+          <h2>等待所有真人入座</h2>
+          <p>
+            {view.public.human_seats_ready
+              ? "真人座位已滿，房主可以開始遊戲。開始後才會揭露各自角色。"
+              : "把分享連結傳給朋友；所有真人座位認領後才能開始。"}
+          </p>
+          <div className="seat-list">
+            {view.public.players.map((player) => (
+              <span key={player.id} className="seat-chip">
+                {player.seat + 1}號 {player.name}{" "}
+                {player.is_human
+                  ? player.claimed
+                    ? "已入座"
+                    : "等待加入"
+                  : "AI"}
+              </span>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="layout">
         <section className="left-col">
@@ -779,13 +1017,32 @@ export function GameScreen({
                 value={speech}
                 onChange={(event) => setSpeech(event.target.value)}
                 placeholder={
-                  canPublicSpeak ? "公開發言" : "目前階段不能公頻發言"
+                  canPublicSpeak
+                    ? "輪到你了，公開發言"
+                    : view.public.discussion_mode === "ordered"
+                      ? "等待你的發言回合"
+                      : "目前階段不能公頻發言"
                 }
                 disabled={!canPublicSpeak}
               />
               <button disabled={busy || !canPublicSpeak || !speech.trim()}>
                 送出
               </button>
+              {canSkipSpeech ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    action(
+                      `/api/games/${view.public.game_id}/speech-skip`,
+                      undefined,
+                      true,
+                    )
+                  }
+                >
+                  略過
+                </button>
+              ) : null}
             </form>
           </section>
 
@@ -838,6 +1095,121 @@ export function GameScreen({
         </section>
 
         <section className="right-col">
+          {(nightPrompt || chambermaidPrompt || canKlutzChoose) && (
+            <section className="panel">
+              <h2>目標選擇</h2>
+              {nightPrompt ? (
+                <form
+                  className="stack-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    action(`/api/games/${view.public.game_id}/night-target`, {
+                      player_id: view.private.player_id,
+                      target_id: nightTarget,
+                    });
+                  }}
+                >
+                  <p>{nightPrompt.prompt}</p>
+                  <select
+                    aria-label="night target"
+                    value={nightTarget}
+                    onChange={(event) => setNightTarget(event.target.value)}
+                  >
+                    {nightPrompt.valid_target_ids.map((targetId) => {
+                      const player = view.public.players.find(
+                        (candidate) => candidate.id === targetId,
+                      );
+                      return (
+                        <option key={targetId} value={targetId}>
+                          {player ? seatName(player) : targetId}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <button disabled={busy || !nightTarget}>送出目標</button>
+                </form>
+              ) : null}
+
+              {chambermaidPrompt ? (
+                <form
+                  className="stack-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    action(
+                      `/api/games/${view.public.game_id}/chambermaid-choice`,
+                      {
+                        player_id: view.private.player_id,
+                        target_ids: chambermaidTargets,
+                      },
+                    );
+                  }}
+                >
+                  <p>{chambermaidPrompt.prompt}</p>
+                  <div className="choice-grid">
+                    {chambermaidPrompt.valid_target_ids.map((targetId) => {
+                      const player = view.public.players.find(
+                        (candidate) => candidate.id === targetId,
+                      );
+                      const checked = chambermaidTargets.includes(targetId);
+                      return (
+                        <label key={targetId} className="check">
+                          <input
+                            aria-label={`chambermaid target ${targetId}`}
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => {
+                              setChambermaidTargets((current) => {
+                                if (event.target.checked) {
+                                  return current.length >= 2
+                                    ? current
+                                    : [...current, targetId];
+                                }
+                                return current.filter(
+                                  (item) => item !== targetId,
+                                );
+                              });
+                            }}
+                          />
+                          {player ? seatName(player) : targetId}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <button disabled={busy || chambermaidTargets.length !== 2}>
+                    送出兩名目標
+                  </button>
+                </form>
+              ) : null}
+
+              {canKlutzChoose ? (
+                <form
+                  className="stack-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    action(`/api/games/${view.public.game_id}/klutz`, {
+                      player_id: view.private.player_id,
+                      target_id: klutzTarget,
+                    });
+                  }}
+                >
+                  <p>你是笨蛋，請選擇一名存活玩家。</p>
+                  <select
+                    aria-label="klutz target"
+                    value={klutzTarget}
+                    onChange={(event) => setKlutzTarget(event.target.value)}
+                  >
+                    {klutzTargets.map((player) => (
+                      <option key={player.id} value={player.id}>
+                        {seatName(player)}
+                      </option>
+                    ))}
+                  </select>
+                  <button disabled={busy || !klutzTarget}>送出笨蛋選擇</button>
+                </form>
+              ) : null}
+            </section>
+          )}
+
           <section className="panel">
             <h2>提名與投票</h2>
             {pendingNomination ? (

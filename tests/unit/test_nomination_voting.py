@@ -4,6 +4,7 @@ import pytest
 
 from botc_ai.domain.context import legal_actions_for
 from botc_ai.domain.models import Phase
+from botc_ai.domain.sessions import claim_human_seat
 from botc_ai.domain.setup import generate_game
 from tests.conftest import fixed_state
 
@@ -35,6 +36,48 @@ def test_public_speech_not_legal_at_night() -> None:
     state.phase = Phase.NIGHT
 
     assert "public_speech" not in legal_actions_for(state, "human")
+
+
+@pytest.mark.asyncio
+async def test_multiplayer_waits_for_all_humans_before_start(mock_engine) -> None:
+    state = generate_game(human_count=2, seed=203, mock_ai=True)
+    claim_human_seat(state, "human", "A")
+
+    await mock_engine.start_game(state)
+
+    assert state.phase == Phase.SETUP
+
+    claim_human_seat(state, "human_2", "B")
+    await mock_engine.start_game(state)
+
+    assert state.phase == Phase.DAWN
+
+
+@pytest.mark.asyncio
+async def test_ordered_discussion_requires_current_speaker(mock_engine) -> None:
+    state = generate_game(
+        human_count=2,
+        seed=204,
+        mock_ai=True,
+        discussion_mode="ordered",
+        shuffle_seats_on_start=False,
+    )
+    claim_human_seat(state, "human", "A")
+    claim_human_seat(state, "human_2", "B")
+
+    await mock_engine.start_game(state)
+    await mock_engine.advance_phase(state)
+
+    assert state.phase == Phase.DAY_DISCUSSION
+    assert state.ordered_speaker_id == "human"
+    assert "public_speech" in legal_actions_for(state, "human")
+    assert "public_speech" not in legal_actions_for(state, "human_2")
+    assert not mock_engine.add_human_public_speech(state, "human_2", "插話").ok
+
+    assert mock_engine.add_human_public_speech(state, "human", "我先講我的資訊").ok
+
+    assert state.ordered_speaker_id == "human_2"
+    assert "public_speech" in legal_actions_for(state, "human_2")
 
 
 @pytest.mark.asyncio

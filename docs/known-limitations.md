@@ -6,5 +6,6 @@
 - UI is functional and responsive, with autonomous ticks and a "run until human decision" flow, but it is not a full polished BOTC client.
 - Mock AI is an offline rules-test and smoke-test provider. It now avoids the most obvious repeated templates, but real conversational play should use OpenAI mode.
 - The setup screen shows whether new games will use Mock AI or OpenAI, and the game screen shows the mode of the loaded game.
-- Multiplayer now supports 1 to 6 human seats with AI filling the rest, but it is still a lightweight private-room model: no accounts, no room moderator tools, no invite password, and no WebSocket/SSE push yet. Polling and the AI tick controls keep the table moving.
+- Multiplayer now supports 1 to 6 human seats with AI filling the rest, a SETUP waiting room, host-controlled start, pregame role masking, ordered/free discussion modes, and developer-only debug controls. It is still a lightweight private-room model: no formal accounts, no room moderator tools, no invite password, no anti-abuse system, and no WebSocket/SSE push yet. Polling and the AI tick cadence keep the table moving.
+- Human target prompts are implemented for the current script's player-facing choices. Phase timers prevent hangs and support ready/skip, but the UI still uses polling rather than push notifications, so remote multiplayer will feel best with a modest AI cooldown and visible phase durations.
 - Pricing data for the requested future model names is unknown by default, so cost can show as unknown while tokens still display.

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class CreateGameRequest(BaseModel):
     human_name: str = Field(default="旅人", max_length=40)
     human_count: int = Field(default=1, ge=1, le=6)
+    discussion_mode: Literal["free", "ordered"] = "free"
+    shuffle_seats_on_start: bool = True
+    night_seconds: int = Field(default=90, ge=15, le=1800)
+    day_discussion_seconds: int = Field(default=240, ge=30, le=3600)
+    private_chat_seconds: int = Field(default=180, ge=15, le=3600)
+    nominations_seconds: int = Field(default=180, ge=30, le=3600)
+    voting_seconds: int = Field(default=60, ge=15, le=600)
     seed: int | None = None
     budget_usd: float = Field(default=1.0, ge=0.0, le=100.0)
     mock_ai: bool | None = None
@@ -48,6 +57,20 @@ class ArtistQuestionRequest(BaseModel):
 class KlutzChoiceRequest(BaseModel):
     player_id: str = "human"
     target_id: str
+
+
+class NightTargetRequest(BaseModel):
+    player_id: str = "human"
+    target_id: str
+
+
+class ChambermaidChoiceRequest(BaseModel):
+    player_id: str = "human"
+    target_ids: list[str] = Field(min_length=2, max_length=2)
+
+
+class PhaseReadyRequest(BaseModel):
+    player_id: str = "human"
 
 
 class BudgetUpdateRequest(BaseModel):

@@ -110,3 +110,14 @@ def test_wrong_multiplayer_session_token_is_rejected() -> None:
         pass
     else:
         raise AssertionError("wrong token should be rejected")
+
+
+def test_setup_private_view_hides_role_until_game_start() -> None:
+    state = generate_game(human_count=2, seed=103, mock_ai=True)
+    claim_human_seat(state, "human", "A")
+
+    view = build_private_view(state, "human")
+
+    assert view.role.slug == "pending"
+    assert "role_info" not in str(view.private_events)
+    assert "true_role" not in view.model_dump_json()

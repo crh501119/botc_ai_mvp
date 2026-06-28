@@ -13,6 +13,8 @@
 - `PublicState`: seats, alive/dead state, public events, nominations, votes, phase, result.
 - `PlayerPrivateView`: apparent role, legal private info, that player's private chats, own memory, legal actions.
 
+`TruthState.pending_action_prompts` stores unresolved human choices such as Imp night target, Chambermaid target pair, and Klutz death choice. `PlayerPrivateView.pending_actions` exposes only the prompt owned by the requesting player, while `PublicState` exposes only public phase/timer status. The submitted target ids are validated against the prompt before the domain engine continues the state transition.
+
 ## AI Storyteller Policy
 
 BOTC has legal storyteller discretion, such as decoy choices and misinformation choices. The implemented `AIStorytellerPolicy` is constrained:
@@ -44,12 +46,16 @@ The engine updates each AI memory from public table events. Human and AI public 
 
 ## Multiplayer Rooms
 
-The app now supports a small real multiplayer table for 1 to 6 human seats, with remaining seats filled by AI. A game creator chooses the human count during setup, claims the first human seat, and receives a share link containing only `game_id`. Other browsers open the link, view the lobby, and claim an open human seat.
+The app now supports a small real multiplayer table for 1 to 6 human seats, with remaining seats filled by AI. A game creator chooses the human count during setup, claims the first human seat, and receives a share link containing only `game_id`. Other browsers open the link, view the lobby, and claim an open human seat. The game remains in `SETUP` until every configured human seat is claimed; only the host seat can start the game.
 
-Human seats are protected by per-seat session tokens. The token is stored in that browser's local storage and sent as `X-Player-Token` for private game views and actions. The token is returned only to the claiming player and is not included in public lobby state, other players' views, AI context, transcript exports before game over, or normal frontend responses.
+Human seats are protected by per-seat session tokens. The token is stored in that browser's local storage and sent as `X-Player-Token` for private game views and actions. The token is returned only to the claiming player and is not included in public lobby state, other players' views, AI context, transcript exports before game over, or normal frontend responses. During `SETUP`, private views mask role cards and role-info events so players do not receive hidden setup information before the host starts.
 
 Backend endpoints build a fresh player-scoped `GameView` for every request. Public lobby responses show seat order, player names, AI/human type, alive/dead state, and whether a human seat has been claimed; they do not include role, alignment, private chats, or hidden game state. Shared public events are safe to poll from multiple devices, while private events remain filtered by the requesting player.
 
 Voting is server-authoritative. During a nomination, each eligible human vote is recorded independently and the table stays in `VOTING` until every required human has voted or abstained. Only then does the engine resolve remaining AI votes and finalize the nomination result. This prevents the first human voter from accidentally consuming the whole vote for the table.
 
-This is intentionally a lightweight room model rather than a full account system. It is suitable for a private friend table shared by URL. The next hardening step is scoped real-time push with SSE/WebSocket, room moderation, reconnect UI, and optional invite codes.
+Discussion cadence is also server-authoritative. `free` mode keeps the lightweight chat-like table flow. `ordered` mode stores `ordered_speaker_id`; only that player receives `public_speech`/`skip_speech` actions during day discussion, and AI ticks speak only when the current speaker is an AI. Human turns stop autonomous AI progress until the player speaks or skips.
+
+Phase timing is server-authoritative as well. Night, day discussion, private chat, nominations, and voting each carry `phase_started_at`, `phase_deadline_at`, and `phase_remaining_seconds` in public state. Humans may mark a phase ready; when every human seat is ready the engine advances early. If a deadline expires, the engine resolves the phase with legal safe defaults such as abstaining from an unresolved vote or using the first valid pending night target.
+
+This is intentionally a lightweight room model rather than a full public platform account system. It is suitable for a private friend table shared by URL. The next hardening step is scoped real-time push with SSE/WebSocket, room moderation, reconnect UI, formal accounts, invite codes, and anti-abuse controls.

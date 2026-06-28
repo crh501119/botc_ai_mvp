@@ -6,6 +6,8 @@
 - New API endpoints must filter by audience scope.
 - Multiplayer endpoints must require the requesting human player's session token before returning private views or accepting actions.
 - Lobby/public endpoints may show seat and claim status only; they must never include private info, hidden roles, alignments, or session tokens.
+- Public-platform features must enforce permissions in the backend, not only by hiding frontend controls.
+- Developer/debug actions such as auto-play or reveal controls must remain gated by `DEV_REVEAL=true`.
 - Tests must never call real models; use `MockAIProvider`.
 - Do not commit secrets, API keys, `.env`, SQLite runtime files, or model transcripts with hidden information.
 - When changing rules, update `docs/game-rules.md`.
