@@ -130,6 +130,43 @@ class TargetPrompt(BaseModel):
     valid_target_ids: list[str] = Field(default_factory=list)
 
 
+class CandidateScore(BaseModel):
+    player_id: str
+    seat_number: int
+    name: str
+    alive: bool
+    public_claim: str | None = None
+    suspicion: float = 0.5
+    pressure_count: int = 0
+    vote_pressure: float = 0.0
+    nomination_score: float = 0.0
+    vote_score: float = 0.0
+    night_kill_score: float = 0.0
+    reasons: list[str] = Field(default_factory=list)
+
+
+class WorldHypothesis(BaseModel):
+    summary: str
+    demon_candidates: list[str] = Field(default_factory=list)
+    minion_candidates: list[str] = Field(default_factory=list)
+    trusted_candidates: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    next_test: str = ""
+
+
+class TableNotebook(BaseModel):
+    day: int = 1
+    phase: Phase = Phase.SETUP
+    claims: dict[str, str] = Field(default_factory=dict)
+    public_facts: list[str] = Field(default_factory=list)
+    vote_notes: list[str] = Field(default_factory=list)
+    private_info: list[str] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
+    candidate_scores: list[CandidateScore] = Field(default_factory=list)
+    worlds: list[WorldHypothesis] = Field(default_factory=list)
+    endgame_warning: str | None = None
+
+
 class AIMemory(BaseModel):
     player_id: str
     suspicion: dict[str, float] = Field(default_factory=dict)
@@ -141,6 +178,8 @@ class AIMemory(BaseModel):
     summary: str = ""
     public_facts: list[str] = Field(default_factory=list)
     vote_notes: list[str] = Field(default_factory=list)
+    notebook: TableNotebook = Field(default_factory=TableNotebook)
+    worlds: list[WorldHypothesis] = Field(default_factory=list)
 
     def compact(self, max_chars: int = 1100) -> None:
         if len(self.summary) > max_chars:
@@ -151,6 +190,8 @@ class AIMemory(BaseModel):
             self.public_facts = self.public_facts[-14:]
         if len(self.vote_notes) > 14:
             self.vote_notes = self.vote_notes[-14:]
+        if len(self.worlds) > 4:
+            self.worlds = self.worlds[:4]
 
 
 class ApiUsageRecord(BaseModel):

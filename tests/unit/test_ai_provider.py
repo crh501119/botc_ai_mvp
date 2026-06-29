@@ -95,7 +95,7 @@ async def test_mock_info_role_volunteers_real_table_information(mock_engine) -> 
     speech = await MockAIProvider().public_speech(state, "ai_1")
 
     assert "鐘錶匠" in speech.speech
-    assert "數字" in speech.speech
+    assert "步數" in speech.speech
     assert speech.claimed_role == "clockmaker"
 
 

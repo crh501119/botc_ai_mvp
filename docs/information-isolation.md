@@ -9,6 +9,7 @@ The app forbids hidden information leakage by construction:
 - Private chat events use `PRIVATE_CHAT_PARTICIPANTS` scope.
 - Full assignments are only returned by postgame reveal or `DEV_REVEAL=true`.
 - Public observation memory is derived only from public speech, nominations, votes, and each AI's own memory record.
+- `TableNotebook`, `CandidateScore`, and `WorldHypothesis` are built per AI from public events, that AI's private events, and that AI's memory only.
 - Mock AI night kills do not select targets by reading hidden alignment; they use visible suspicion, public claims, and pressure summaries.
 
 Security tests include:
@@ -21,3 +22,5 @@ Security tests include:
 - `test_dev_reveal_disabled_by_default`
 - `test_mock_night_target_uses_memory_not_hidden_alignment`
 - `test_nomination_updates_ai_suspicion_without_truth`
+- `test_table_notebook_contains_public_claims_without_truth`
+- `test_refresh_ai_brain_updates_isolated_memory_only`

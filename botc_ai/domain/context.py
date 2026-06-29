@@ -6,6 +6,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from botc_ai.domain.ai_brain import refresh_ai_brain
 from botc_ai.domain.models import (
     AudienceScope,
     GameEvent,
@@ -243,6 +244,7 @@ def build_game_view(
 def build_ai_context(
     state: TruthState, player_id: str, *, purpose: str, max_chars: int = 11000
 ) -> str:
+    notebook = refresh_ai_brain(state, player_id)
     public = build_public_state(state).model_dump(mode="json")
     private = build_private_view(state, player_id).model_dump(mode="json")
     memory = state.ai_memories.get(player_id)
@@ -277,6 +279,9 @@ def build_ai_context(
             "你可以說謊或 bluff，但謊言必須像玩家推理，不可以像知道魔典。",
         ],
         "visible_table_read": _visible_table_read(state, player_id),
+        "table_notebook": notebook.model_dump(mode="json"),
+        "world_hypotheses": [world.model_dump(mode="json") for world in notebook.worlds],
+        "candidate_scores": [score.model_dump(mode="json") for score in notebook.candidate_scores],
         "recent_public_events": _recent_public_events(state),
         "recent_private_chat_events": _recent_private_chat_events(state, player_id),
         "hard_rules": [
@@ -318,6 +323,9 @@ def build_ai_context(
     public["public_events"] = public["public_events"][-20:]
     private["private_chats"] = private["private_chats"][-12:]
     private["private_events"] = private["private_events"][-18:]
+    payload["table_notebook"]["public_facts"] = payload["table_notebook"]["public_facts"][-10:]
+    payload["table_notebook"]["private_info"] = payload["table_notebook"]["private_info"][-6:]
+    payload["table_notebook"]["vote_notes"] = payload["table_notebook"]["vote_notes"][-8:]
     payload["public_state"] = public
     payload["your_private_view"] = private
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

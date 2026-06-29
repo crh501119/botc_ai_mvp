@@ -22,9 +22,16 @@ from botc_ai.ai.schemas import (
     PublicSpeechAction,
     VoteAction,
 )
+from botc_ai.domain.ai_brain import refresh_ai_brain
 from botc_ai.domain.artist import ArtistParseResult, ArtistStructuredQuestion, parse_artist_question
 from botc_ai.domain.context import build_ai_context
-from botc_ai.domain.models import AIMemory, ApiUsageRecord, AudienceScope, TruthState
+from botc_ai.domain.models import (
+    AIMemory,
+    ApiUsageRecord,
+    AudienceScope,
+    CandidateScore,
+    TruthState,
+)
 from botc_ai.domain.roles import OUTSIDERS, ROLE_SPECS, TOWNSFOLK, Alignment
 from botc_ai.domain.setup import AI_PERSONAS
 from botc_ai.domain.usage import record_usage, summarize_usage
@@ -87,6 +94,41 @@ def _safe_target(valid_targets: Sequence[str], fallback: str = "") -> str:
     return fallback
 
 
+def _candidate_scores_for(
+    state: TruthState, player_id: str, valid_targets: Sequence[str] | None = None
+) -> list[CandidateScore]:
+    includes_self = valid_targets is not None and player_id in valid_targets
+    notebook = refresh_ai_brain(state, player_id, valid_targets if includes_self else None)
+    allowed = set(valid_targets) if valid_targets is not None else None
+    return [
+        score
+        for score in notebook.candidate_scores
+        if allowed is None or score.player_id in allowed
+    ]
+
+
+def _best_candidate(
+    state: TruthState,
+    player_id: str,
+    valid_targets: Sequence[str],
+    field: str,
+    *,
+    purpose: str,
+) -> CandidateScore | None:
+    scores = _candidate_scores_for(state, player_id, valid_targets)
+    if not scores:
+        return None
+    rng = _rng_for(state, player_id, f"brain:{purpose}")
+    return max(scores, key=lambda score: getattr(score, field) + rng.random() * 0.025)
+
+
+def _score_reason_text(score: CandidateScore | None) -> str:
+    if score is None:
+        return "目前沒有足夠資訊。"
+    details = "；".join(score.reasons[:2])
+    return details or f"{score.seat_number}號{score.name} 需要被追問。"
+
+
 def _top_suspect(
     state: TruthState,
     player_id: str,
@@ -94,26 +136,10 @@ def _top_suspect(
     *,
     purpose: str = "suspect",
 ) -> str:
-    memory = state.ai_memories.get(player_id)
     if not valid_targets:
         return ""
-    if memory is None:
-        return valid_targets[0]
-    rng = _rng_for(state, player_id, f"target:{purpose}")
-
-    def score(target_id: str) -> float:
-        suspicion = memory.suspicion.get(target_id, 0.5)
-        pressure = _recent_pressure_count(state, target_id)
-        if target_id == state.human_id and suspicion < 0.62:
-            suspicion -= 0.24
-        if pressure >= 2 and suspicion < 0.68:
-            suspicion -= 0.08 * min(pressure, 4)
-        return suspicion + rng.random() * 0.09
-
-    return max(
-        valid_targets,
-        key=score,
-    )
+    best = _best_candidate(state, player_id, valid_targets, "nomination_score", purpose=purpose)
+    return best.player_id if best is not None else valid_targets[0]
 
 
 def _mock_night_target_score(
@@ -463,7 +489,7 @@ def _private_info_brief_for_mock(state: TruthState, player_id: str) -> str:
         if event.scope != AudienceScope.PLAYER_ONLY or player_id not in event.target_ids:
             continue
         if event.type == "clockmaker_info":
-            return f"我是鐘錶匠，數字是 {event.metadata.get('value')}。"
+            return f"我是鐘錶匠，惡魔到最近爪牙的座位步數是 {event.metadata.get('value')}。"
         if event.type == "investigator_info":
             players = event.metadata.get("players", [])
             role = event.metadata.get("minion_role")
@@ -474,13 +500,13 @@ def _private_info_brief_for_mock(state: TruthState, player_id: str) -> str:
                     f"{ROLE_SPECS[role].zh_name}。"
                 )
         if event.type == "empath_info":
-            return f"我是共情者，數字是 {event.metadata.get('value')}。"
+            return f"我是共情者，兩側最近存活鄰居中的邪惡數是 {event.metadata.get('value')}。"
         if event.type == "chambermaid_info":
             players = event.metadata.get("players", [])
             if isinstance(players, list) and len(players) >= 2:
                 return (
                     f"我是侍女，查了{_player_label_for_mock(state, str(players[0]))}"
-                    f"和{_player_label_for_mock(state, str(players[1]))}，數字是"
+                    f"和{_player_label_for_mock(state, str(players[1]))}，醒來人數是"
                     f"{event.metadata.get('value')}。"
                 )
     return ""
@@ -497,9 +523,15 @@ def _natural_mock_public_speech(state: TruthState, player_id: str) -> PublicSpee
     memory = state.ai_memories.get(player_id)
     style = _persona_style(player_id)
     valid_targets = [p.id for p in state.players if p.id != player_id]
+    notebook = refresh_ai_brain(state, player_id, valid_targets)
     suspect_id = _top_suspect(state, player_id, valid_targets, purpose="natural_public_speech")
     suspect_id = _alternate_suspect(state, player_id, suspect_id, valid_targets)
     suspect_label = _player_label_for_mock(state, suspect_id) if suspect_id else "某個邊位"
+    suspect_score = next(
+        (score for score in notebook.candidate_scores if score.player_id == suspect_id), None
+    )
+    suspect_reason = _score_reason_text(suspect_score)
+    world = notebook.worlds[0] if notebook.worlds else None
     speech_count = _public_speech_count(state, player_id)
     latest = _latest_public_speech(state, player_id)
     latest_text = latest[1] if latest else ""
@@ -514,24 +546,24 @@ def _natural_mock_public_speech(state: TruthState, player_id: str) -> PublicSpee
         )
     elif latest and _asks_identity_for_mock(latest_text):
         if info:
-            speech = f"我回一下，我可以先開：{info}所以我想先對 {suspect_label} 施壓。"
+            speech = f"我回一下，我可以先開：{info}所以我想先對 {suspect_label} 施壓，理由是：{suspect_reason}"
             claim_used = True
         else:
             speech = (
                 f"我回一下，我目前偏向報 {claim_name}，但不想把細節一次交完。"
-                f"{suspect_label} 先說你昨晚或第一夜拿到什麼。"
+                f"{suspect_label} 先說你昨晚或第一夜拿到什麼；我目前卡的是：{suspect_reason}"
             )
             claim_used = True
     elif speech_count == 0 and info and rng.random() < 0.82:
-        speech = f"我先給資訊：{info}這局先從座位關係看，{suspect_label} 的反應我會特別記。"
+        speech = f"我先給資訊：{info}這局先從座位和票型看，{suspect_label} 的反應我會特別記。"
         claim_used = True
     elif speech_count == 0:
         openings = {
-            "邏輯分析型": f"我先不講空話。現在昨晚死亡是 {len(state.last_night_deaths)} 人，我想先聽 {suspect_label} 的角色範圍。",
-            "社交協調型": f"我想先把資訊排一下。{suspect_label} 你可以先給一個角色範圍，我再決定要不要私聊你。",
+            "邏輯分析型": f"我先給桌面讀法：{suspect_reason}所以我想先聽 {suspect_label} 的角色範圍。",
+            "社交協調型": f"我想先把資訊排一下。{suspect_label} 你給一個能回頭檢查的範圍，我可以私聊對表。",
             "激進施壓型": f"我會先壓 {suspect_label}。不用長篇，直接說你是不是資訊位、拿到什麼。",
-            "保守懷疑型": f"我先保守一點，不急著定人。{suspect_label} 如果只講態度不講資訊，我會先扣分。",
-            "直覺混沌型": f"我直覺先看 {suspect_label}，不是定狼，但這個位置今天得講點真的東西。",
+            "保守懷疑型": f"我先保守一點。{suspect_label} 目前是我的觀察位，理由是：{suspect_reason}",
+            "直覺混沌型": f"我直覺先看 {suspect_label}，不是定狼，但你今天得丟一個真的可檢查的點。",
         }
         speech = openings.get(style, f"我先聽 {suspect_label} 的資訊，再決定票要不要動。")
     else:
@@ -542,10 +574,13 @@ def _natural_mock_public_speech(state: TruthState, player_id: str) -> PublicSpee
             actor_name, _ = latest
             speech = f"接 {actor_name} 那句，我不同意只打模糊仗。{suspect_label} 直接給角色範圍或夜晚資訊。"
         else:
-            speech = f"我目前不想散票。{suspect_label} 如果再不給資訊，我會考慮把你放進提名池。"
+            next_test = world.next_test if world else f"追問 {suspect_label}"
+            speech = f"我目前不想散票。{next_test}"
 
     if memory is not None:
-        memory.next_intent = f"追問 {suspect_label} 的資訊與票型"
+        memory.next_intent = (
+            world.next_test[:180] if world else f"追問 {suspect_label} 的資訊與票型"
+        )
         memory.summary = (
             f"{memory.summary}\nD{state.day}: public stance toward {suspect_id}".strip()[-1100:]
         )
@@ -653,14 +688,30 @@ class MockAIProvider:
         if style == "社交協調型" and "human" in valid_targets:
             target_id = "human"
         else:
-            target_id = _top_suspect(state, player_id, valid_targets, purpose="private_message")
-            if not target_id:
-                target_id = rng.choice(list(valid_targets))
+            target_candidate = _best_candidate(
+                state, player_id, valid_targets, "vote_score", purpose="private_message"
+            )
+            target_id = (
+                target_candidate.player_id
+                if target_candidate is not None
+                else rng.choice(list(valid_targets))
+            )
         target = state.by_id(target_id)
+        target_score = next(
+            (
+                score
+                for score in _candidate_scores_for(state, player_id, [target_id])
+                if score.player_id == target_id
+            ),
+            None,
+        )
         _mock_usage(state, player_id, "private_message", 220, 45)
         return PrivateMessageAction(
             target_id=target_id,
-            message=f"我想聽你對 {target.name} 的看法；我可以先給一個模糊角色範圍，但不想太早全公開。",
+            message=(
+                f"我想聽你對 {target.seat + 1}號{target.name} 的看法。"
+                f"我這邊卡的是：{_score_reason_text(target_score)}"
+            ),
         )
 
     async def nominate(
@@ -669,6 +720,10 @@ class MockAIProvider:
         rng = _rng_for(state, player_id, "nominate")
         player = state.by_id(player_id)
         style = _persona_style(player_id)
+        best = _best_candidate(
+            state, player_id, valid_targets, "nomination_score", purpose="nominate"
+        )
+        top_score = best.nomination_score if best is not None else 0.0
         nomination_chance = {
             "激進施壓型": 0.8,
             "直覺混沌型": 0.55,
@@ -676,11 +731,14 @@ class MockAIProvider:
             "社交協調型": 0.35,
             "保守懷疑型": 0.22,
         }.get(style, 0.4)
+        should_hold = _should_hold_nomination(state, style, rng) and top_score < 0.78
+        should_nominate = top_score >= 0.72 or rng.random() <= nomination_chance
         if (
             not player.alive
             or not valid_targets
-            or _should_hold_nomination(state, style, rng)
-            or rng.random() > nomination_chance
+            or should_hold
+            or not should_nominate
+            or top_score < 0.5
         ):
             _mock_usage(state, player_id, "nominate", 160, 20)
             return NominationAction(
@@ -693,15 +751,16 @@ class MockAIProvider:
                     ]
                 ),
             )
-        target_id = _top_suspect(state, player_id, valid_targets, purpose="nominate") or rng.choice(
-            list(valid_targets)
-        )
+        target_id = best.player_id if best is not None else rng.choice(list(valid_targets))
         target = state.by_id(target_id)
         _mock_usage(state, player_id, "nominate", 180, 35)
         return NominationAction(
             nominate=True,
             target_id=target_id,
-            reason=_mock_nomination_reason(state, style, target.name, rng),
+            reason=(
+                f"我提名 {target.seat + 1}號{target.name}："
+                f"{_score_reason_text(best)}。這一票主要是逼辯護和看票型。"
+            )[:180],
         )
 
     async def defense(self, state: TruthState, player_id: str, accusation: str) -> DefenseAction:
@@ -713,38 +772,61 @@ class MockAIProvider:
     ) -> VoteAction:
         rng = _rng_for(state, player_id, f"vote:{nominee_id}")
         nominee = state.by_id(nominee_id)
-        memory = state.ai_memories.get(player_id)
-        suspicion = memory.suspicion.get(nominee_id, 0.5) if memory else 0.5
         style = _persona_style(player_id)
-        bias = {"激進施壓型": 0.18, "保守懷疑型": -0.18, "直覺混沌型": 0.08}.get(style, 0)
+        nominee_score = next(
+            (
+                score
+                for score in _candidate_scores_for(state, player_id, [nominee_id])
+                if score.player_id == nominee_id
+            ),
+            None,
+        )
+        vote_score = nominee_score.vote_score if nominee_score is not None else 0.5
+        threshold = {
+            "激進施壓型": 0.5,
+            "直覺混沌型": 0.54,
+            "邏輯分析型": 0.57,
+            "社交協調型": 0.6,
+            "保守懷疑型": 0.67,
+        }.get(style, 0.58)
         if player_id == nominee_id:
             self_vote_chance = {"激進施壓型": 0.28, "直覺混沌型": 0.18}.get(style, 0.08)
             vote = nominee.alive and rng.random() < self_vote_chance
         else:
-            vote = nominee.alive and rng.random() < min(0.9, max(0.15, suspicion + bias))
+            margin = vote_score - threshold
+            swing_chance = 0.18 + max(0.0, margin) * 1.8
+            vote = nominee.alive and (
+                margin >= 0.08 or (margin > -0.03 and rng.random() < min(0.55, swing_chance))
+            )
         _mock_usage(state, player_id, "vote", 150, 20)
+        reason = _score_reason_text(nominee_score)
+        tone = {
+            "激進施壓型": "我願意用票逼答案，",
+            "保守懷疑型": "我不想輕易送人出局，",
+            "社交協調型": "我看大家能不能跟上這個理由，",
+            "邏輯分析型": "按目前桌面資訊，",
+            "直覺混沌型": "我這票有一點直覺成分，",
+        }.get(style, "")
         return VoteAction(
             vote=vote,
-            public_reason=_mock_vote_reason(
-                state, player_id, nominee_id, vote=vote, style=style, rng=rng
-            ),
+            public_reason=(
+                f"{tone}我投，理由是：{reason}"
+                if vote
+                else f"{tone}我先不投，理由還沒過我的門檻：{reason}"
+            )[:150],
         )
 
     async def night_target(
         self, state: TruthState, player_id: str, valid_targets: Sequence[str]
     ) -> NightTargetAction:
-        rng = _rng_for(state, player_id, "night_target")
-        memory = state.ai_memories.get(player_id)
         candidates = list(valid_targets)
         if not candidates:
             target_id = player_id
         else:
-            target_id = max(
-                candidates,
-                key=lambda target_id: _mock_night_target_score(
-                    state, player_id, target_id, memory=memory, rng=rng
-                ),
+            best = _best_candidate(
+                state, player_id, candidates, "night_kill_score", purpose="night_target"
             )
+            target_id = best.player_id if best is not None else candidates[0]
         _mock_usage(state, player_id, "night_target", 90, 8)
         return NightTargetAction(target_id=target_id)
 
@@ -899,6 +981,7 @@ class OpenAIProvider:
         if _budget_reached(state):
             state.ai_budget_paused = True
             raise BudgetExceeded("本局 AI 預算已達上限。")
+        refresh_ai_brain(state, player_id, _targets_from_purpose(purpose) or None)
         prompt = build_ai_context(state, player_id, purpose=purpose)
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):

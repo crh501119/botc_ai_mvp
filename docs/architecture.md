@@ -48,6 +48,14 @@ AI speech prompts include a real-player protocol: respond to the current table m
 
 Open nominations are serialized by the domain engine and by a per-game API action lock. If a nomination is already waiting for votes, new human or AI nominations are rejected until that vote resolves. This prevents simultaneous browser requests or an AI tick from creating overlapping nominations.
 
+## AI Brain Pipeline
+
+Before an AI speaks or acts, `refresh_ai_brain` builds a `TableNotebook` for that specific player. The notebook contains only public events, public claim memory, vote notes, the player's own private information, and that player's isolated `AIMemory`. It never reads other players' true roles, true alignments, `current_demon_id`, storyteller-internal events, ORM rows, or database records.
+
+The notebook produces `CandidateScore` rows for legal table targets and a small set of `WorldHypothesis` objects. These are not rule adjudications; they are player-facing guesses used to make speech, nominations, votes, private chats, and night targets less template-like. Domain validation still decides whether an action is legal, and the domain engine still owns deaths, role results, transformations, and win conditions.
+
+OpenAI prompts include this notebook as a bounded public-safe table read. Mock AI uses the same notebook directly, so offline play and API fallback follow the same reasoning surface instead of falling back to fixed phrases.
+
 ## Multiplayer Rooms
 
 The app now supports a small real multiplayer table for 1 to 6 human seats, with remaining seats filled by AI. A game creator chooses the human count during setup, claims the first human seat, and receives a share link containing only `game_id`. Other browsers open the link, view the lobby, and claim an open human seat. The game remains in `SETUP` until every configured human seat is claimed; only the host seat can start the game.
