@@ -280,7 +280,7 @@ class GameEngine:
                 return state.by_id(state.ordered_speaker_id)
             except KeyError:
                 state.ordered_speaker_id = None
-        ordered = seat_order(state)
+        ordered = self._day_discussion_order(state)
         spoken = set(state.discussion_speakers_today)
         next_player = next((player for player in ordered if player.id not in spoken), None)
         if next_player is None:
@@ -419,7 +419,7 @@ class GameEngine:
     def _discussion_speakers(
         self, state: TruthState, *, speaker_limit: int | None
     ) -> list[PlayerTruth]:
-        ai_players = [player for player in seat_order(state) if not player.is_human]
+        ai_players = [player for player in self._day_discussion_order(state) if not player.is_human]
         if speaker_limit is None:
             return ai_players
         remaining = [
@@ -451,6 +451,17 @@ class GameEngine:
             ai_players,
             key=lambda player: (0 if was_mentioned(player) else 1, player.seat),
         )[:limit]
+
+    def _day_discussion_order(self, state: TruthState) -> list[PlayerTruth]:
+        ordered = seat_order(state)
+        death_ids = [player_id for player_id in state.last_night_deaths if player_id]
+        deaths_first = [
+            state.by_id(player_id)
+            for player_id in death_ids
+            if any(player.id == player_id for player in state.players)
+        ]
+        seen = {player.id for player in deaths_first}
+        return [*deaths_first, *[player for player in ordered if player.id not in seen]]
 
     def _all_ai_spoke_this_round(self, state: TruthState) -> bool:
         ai_ids = {player.id for player in state.players if not player.is_human}
@@ -1519,7 +1530,19 @@ class GameEngine:
         text = speech.strip()
         lowered = text.lower()
         compact = re.sub(r"\s+", "", lowered)
-        markers = ("我是", "我跳", "自稱", "宣稱", "角色是", "偏向我是")
+        markers = (
+            "我是",
+            "我跳",
+            "我報",
+            "我可能是",
+            "我偏向是",
+            "自稱",
+            "宣稱",
+            "角色是",
+            "偏向我是",
+            "身份是",
+            "身分是",
+        )
         english_markers = ("claim", "claimed", "role is", "i am")
         if not any(marker in compact for marker in markers) and not any(
             marker in lowered for marker in english_markers

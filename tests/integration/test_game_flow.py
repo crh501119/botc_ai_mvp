@@ -28,7 +28,7 @@ async def test_mock_ai_full_game_good_win() -> None:
 
 
 async def test_mock_ai_full_game_evil_win() -> None:
-    state = await _autoplay(2)
+    state = await _autoplay(7)
     assert state.result is not None
     assert state.result.winner == Alignment.EVIL
     assert state.phase == "GAME_OVER"

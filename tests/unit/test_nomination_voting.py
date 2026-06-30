@@ -21,6 +21,18 @@ def test_human_public_claim_is_recorded_for_ai_memories(mock_engine) -> None:
     )
 
 
+def test_natural_public_claim_phrasing_is_recorded(mock_engine) -> None:
+    state = fixed_state()
+    state.phase = Phase.DAY_DISCUSSION
+
+    result = mock_engine.add_human_public_speech(state, "human", "我可能是 clockmaker，先不全開")
+
+    assert result.ok
+    assert all(
+        memory.known_claims.get("human") == "clockmaker" for memory in state.ai_memories.values()
+    )
+
+
 def test_public_speech_rejected_at_night(mock_engine) -> None:
     state = fixed_state()
     state.phase = Phase.NIGHT
@@ -78,6 +90,24 @@ async def test_ordered_discussion_requires_current_speaker(mock_engine) -> None:
 
     assert state.ordered_speaker_id == "human_2"
     assert "public_speech" in legal_actions_for(state, "human_2")
+
+
+@pytest.mark.asyncio
+async def test_ordered_discussion_starts_with_last_night_death(mock_engine) -> None:
+    state = generate_game(
+        seed=205,
+        mock_ai=True,
+        discussion_mode="ordered",
+        shuffle_seats_on_start=False,
+    )
+
+    await mock_engine.start_game(state)
+    state.last_night_deaths = ["ai_3"]
+    state.by_id("ai_3").alive = False
+    await mock_engine.advance_phase(state)
+
+    assert state.phase == Phase.DAY_DISCUSSION
+    assert state.ordered_speaker_id == "ai_3"
 
 
 @pytest.mark.asyncio

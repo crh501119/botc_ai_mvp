@@ -119,6 +119,19 @@ async def test_mock_ai_opening_avoids_template_dogpile_on_human() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mock_ai_does_not_judge_unspoken_player_information() -> None:
+    state = fixed_state(seed=33)
+    state.ai_memories["ai_1"].suspicion["ai_5"] = 0.98
+
+    action = await MockAIProvider().public_speech(state, "ai_1")
+
+    assert "還沒發言" in action.speech
+    assert "先不評價" in action.speech
+    assert "資訊怪" not in action.speech
+    assert "矛盾" not in action.speech
+
+
+@pytest.mark.asyncio
 async def test_mock_vote_reasons_vary_by_persona() -> None:
     state = fixed_state(seed=21)
     provider = MockAIProvider()
@@ -137,10 +150,18 @@ async def test_mock_vote_reasons_vary_by_persona() -> None:
 async def test_mock_nomination_reason_is_not_fixed_template() -> None:
     state = fixed_state(seed=1)
     provider = MockAIProvider()
+    state.ai_memories["ai_3"].suspicion["ai_1"] = 0.92
+    state.add_event(
+        "2號林鏡：我報藝術家，但今天先不問。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="ai_1",
+    )
 
     action = await provider.nominate(state, "ai_3", ["human", "ai_1"])
 
     assert action.nominate
+    assert action.target_id == "ai_1"
     assert action.reason != "需要用提名測試 林鏡 的說法、反應與票型。"
 
 

@@ -129,6 +129,16 @@ def _score_reason_text(score: CandidateScore | None) -> str:
     return details or f"{score.seat_number}號{score.name} 需要被追問。"
 
 
+def _needs_first_speech(score: CandidateScore | None) -> bool:
+    return score is not None and not score.spoke_today
+
+
+def _first_speech_request(score: CandidateScore | None) -> str:
+    if score is None:
+        return "我想先讓還沒講過的人補一輪。"
+    return f"{score.seat_number}號{score.name}今天還沒發言，我先不評價他的資訊；請他先開口。"
+
+
 def _top_suspect(
     state: TruthState,
     player_id: str,
@@ -546,33 +556,63 @@ def _natural_mock_public_speech(state: TruthState, player_id: str) -> PublicSpee
         )
     elif latest and _asks_identity_for_mock(latest_text):
         if info:
-            speech = f"我回一下，我可以先開：{info}所以我想先對 {suspect_label} 施壓，理由是：{suspect_reason}"
+            target_line = (
+                _first_speech_request(suspect_score)
+                if _needs_first_speech(suspect_score)
+                else f"所以我想先對 {suspect_label} 施壓，理由是：{suspect_reason}"
+            )
+            speech = f"我回一下，我可以先開：{info}{target_line}"
             claim_used = True
         else:
-            speech = (
-                f"我回一下，我目前偏向報 {claim_name}，但不想把細節一次交完。"
-                f"{suspect_label} 先說你昨晚或第一夜拿到什麼；我目前卡的是：{suspect_reason}"
+            target_line = (
+                _first_speech_request(suspect_score)
+                if _needs_first_speech(suspect_score)
+                else f"{suspect_label} 先說你昨晚或第一夜拿到什麼；我目前卡的是：{suspect_reason}"
             )
+            speech = f"我回一下，我目前偏向報 {claim_name}，但不想把細節一次交完。{target_line}"
             claim_used = True
-    elif speech_count == 0 and info and rng.random() < 0.82:
-        speech = f"我先給資訊：{info}這局先從座位和票型看，{suspect_label} 的反應我會特別記。"
+    elif speech_count == 0 and info:
+        target_line = (
+            _first_speech_request(suspect_score)
+            if _needs_first_speech(suspect_score)
+            else f"這局先從座位和票型看，{suspect_label} 的反應我會特別記。"
+        )
+        speech = f"我先給資訊：{info}{target_line}"
+        claim_used = True
+    elif speech_count == 0 and rng.random() < 0.72:
+        target_line = (
+            _first_speech_request(suspect_score)
+            if _needs_first_speech(suspect_score)
+            else f"我想聽 {suspect_label} 對自己的資訊怎麼交代。"
+        )
+        speech = f"我先半開，我偏向是 {claim_name}。{target_line}"
         claim_used = True
     elif speech_count == 0:
         openings = {
-            "邏輯分析型": f"我先給桌面讀法：{suspect_reason}所以我想先聽 {suspect_label} 的角色範圍。",
-            "社交協調型": f"我想先把資訊排一下。{suspect_label} 你給一個能回頭檢查的範圍，我可以私聊對表。",
-            "激進施壓型": f"我會先壓 {suspect_label}。不用長篇，直接說你是不是資訊位、拿到什麼。",
-            "保守懷疑型": f"我先保守一點。{suspect_label} 目前是我的觀察位，理由是：{suspect_reason}",
-            "直覺混沌型": f"我直覺先看 {suspect_label}，不是定狼，但你今天得丟一個真的可檢查的點。",
+            "邏輯分析型": f"我先給桌面讀法：{_first_speech_request(suspect_score) if _needs_first_speech(suspect_score) else suspect_reason}",
+            "社交協調型": f"我想先把資訊排一下。{_first_speech_request(suspect_score) if _needs_first_speech(suspect_score) else f'{suspect_label} 你給一個能回頭檢查的範圍，我可以私聊對表。'}",
+            "激進施壓型": f"{_first_speech_request(suspect_score) if _needs_first_speech(suspect_score) else f'我會先壓 {suspect_label}。不用長篇，直接說你是不是資訊位、拿到什麼。'}",
+            "保守懷疑型": f"我先保守一點。{_first_speech_request(suspect_score) if _needs_first_speech(suspect_score) else f'{suspect_label} 目前是我的觀察位，理由是：{suspect_reason}'}",
+            "直覺混沌型": f"{_first_speech_request(suspect_score) if _needs_first_speech(suspect_score) else f'我直覺先看 {suspect_label}，不是定狼，但你今天得丟一個真的可檢查的點。'}",
         }
         speech = openings.get(style, f"我先聽 {suspect_label} 的資訊，再決定票要不要動。")
     else:
         vote_line = _latest_vote_result_line(state)
         if vote_line:
-            speech = f"{vote_line} 這票型我先記下來；下一個我想聽 {suspect_label} 怎麼解釋。"
+            followup = (
+                _first_speech_request(suspect_score)
+                if _needs_first_speech(suspect_score)
+                else f"下一個我想聽 {suspect_label} 怎麼解釋。"
+            )
+            speech = f"{vote_line} 這票型我先記下來；{followup}"
         elif latest:
             actor_name, _ = latest
-            speech = f"接 {actor_name} 那句，我不同意只打模糊仗。{suspect_label} 直接給角色範圍或夜晚資訊。"
+            followup = (
+                _first_speech_request(suspect_score)
+                if _needs_first_speech(suspect_score)
+                else f"{suspect_label} 直接給角色範圍或夜晚資訊。"
+            )
+            speech = f"接 {actor_name} 那句，我不同意只打模糊仗。{followup}"
         else:
             next_test = world.next_test if world else f"追問 {suspect_label}"
             speech = f"我目前不想散票。{next_test}"

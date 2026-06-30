@@ -69,6 +69,39 @@ def test_ai_context_marks_self_identity_and_own_public_history() -> None:
     assert "true_role" not in context
 
 
+def test_ai_context_lists_unspoken_players_and_warning() -> None:
+    state = fixed_state()
+    state.add_event(
+        "2號沈炬：我是鐘錶匠，數字是 1。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="ai_1",
+    )
+
+    context = build_ai_context(state, "ai_1", purpose="public_speech")
+
+    assert "players_yet_to_speak_today" in context
+    assert '"id":"ai_5"' in context
+    assert "不要說他的資訊怪" in context
+    assert "spoke_today" in context
+    assert "last_public_statement" in context
+    assert "true_role" not in context
+
+
+def test_ai_context_contains_rules_reference_without_truth() -> None:
+    state = fixed_state("clockmaker", "investigator", "empath", "klutz", "scarlet_woman", "imp")
+
+    context = build_ai_context(state, "ai_1", purpose="public_speech", max_chars=14000)
+
+    assert "rules_reference" in context
+    assert "phase_playbook" in context
+    assert "處決門檻是存活玩家數的一半向上取整" in context
+    assert "六人局惡魔與爪牙不互認" in context
+    assert "your_role_playbook" in context
+    assert "true_role" not in context
+    assert "current_demon_id" not in context
+
+
 def test_private_chat_only_visible_to_participants() -> None:
     state = fixed_state()
     state.add_event(

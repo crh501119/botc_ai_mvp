@@ -69,3 +69,30 @@ def test_refresh_ai_brain_updates_isolated_memory_only() -> None:
     assert notebook.candidate_scores
     assert state.ai_memories["ai_1"].notebook.candidate_scores
     assert not state.ai_memories["ai_2"].notebook.candidate_scores
+
+
+def test_candidate_score_marks_unspoken_players_without_judging_info() -> None:
+    state = fixed_state()
+
+    score = next(item for item in score_candidates(state, "ai_1") if item.player_id == "ai_5")
+
+    assert not score.spoke_today
+    assert score.public_speech_count == 0
+    assert any("尚未發言" in reason for reason in score.reasons)
+    assert not any("資訊怪" in reason or "矛盾" in reason for reason in score.reasons)
+
+
+def test_candidate_score_tracks_last_public_statement() -> None:
+    state = fixed_state()
+    state.add_event(
+        "6號許霜：我是共情者，數字是 1。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="ai_5",
+    )
+
+    score = next(item for item in score_candidates(state, "ai_1") if item.player_id == "ai_5")
+
+    assert score.spoke_today
+    assert score.public_speech_count == 1
+    assert score.last_public_statement == "我是共情者，數字是 1。"

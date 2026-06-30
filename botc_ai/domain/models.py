@@ -136,6 +136,9 @@ class CandidateScore(BaseModel):
     name: str
     alive: bool
     public_claim: str | None = None
+    public_speech_count: int = 0
+    spoke_today: bool = False
+    last_public_statement: str | None = None
     suspicion: float = 0.5
     pressure_count: int = 0
     vote_pressure: float = 0.0

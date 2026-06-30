@@ -34,6 +34,8 @@ AI autonomy is driven by `/api/games/{game_id}/ai-tick`. Each tick advances only
 
 Day discussion uses seat-order cadence for primary AI speeches. Reactive replies may prioritize players named by the human, but otherwise preserve seat order. Public logs, nominations, votes, deaths, and AI context use one-based seat labels such as `3號 林鏡`, because BOTC table talk usually references seats as much as names.
 
+If one or more players died during the previous night, day discussion order starts with those dead players before returning to normal seat order. This gives dead players a natural first chance to share final information or frame the day, and it also prevents living AI players from speculating about a dead player's information before that player has spoken.
+
 ## API Player Context
 
 OpenAI-backed players receive a bounded player context rather than raw database rows. The context includes persona, table cadence, recent public events, only that player's private chats, public-safe player status, memory summary, visible role information, and an action contract for the current structured schema. Model outputs may include `memory_update`; the backend validates and clamps it before updating only that player's private AI memory.
@@ -55,6 +57,8 @@ Before an AI speaks or acts, `refresh_ai_brain` builds a `TableNotebook` for tha
 The notebook produces `CandidateScore` rows for legal table targets and a small set of `WorldHypothesis` objects. These are not rule adjudications; they are player-facing guesses used to make speech, nominations, votes, private chats, and night targets less template-like. Domain validation still decides whether an action is legal, and the domain engine still owns deaths, role results, transformations, and win conditions.
 
 OpenAI prompts include this notebook as a bounded public-safe table read. Mock AI uses the same notebook directly, so offline play and API fallback follow the same reasoning surface instead of falling back to fixed phrases.
+
+Candidate scores include whether each player has spoken today, how many public speeches they have made, and their latest public statement. AI players must not criticize the information content of a player who has not yet spoken today; they may only ask that player to speak. Information roles are prompted to share complete or partial information in their first day speech unless they have an explicit bluff or secrecy reason.
 
 ## Multiplayer Rooms
 

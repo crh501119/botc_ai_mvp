@@ -247,12 +247,13 @@ def build_game_view(
 
 
 def build_ai_context(
-    state: TruthState, player_id: str, *, purpose: str, max_chars: int = 11000
+    state: TruthState, player_id: str, *, purpose: str, max_chars: int = 14000
 ) -> str:
     notebook = refresh_ai_brain(state, player_id)
     public = build_public_state(state).model_dump(mode="json")
     private = build_private_view(state, player_id).model_dump(mode="json")
     memory = state.ai_memories.get(player_id)
+    private["memory"] = _memory_context(memory)
     persona = next((item for item in AI_PERSONAS if item.id == player_id), None)
     payload: dict[str, Any] = {
         "language": "zh-TW",
@@ -274,12 +275,15 @@ def build_ai_context(
             "mode": "線上即時桌遊；一次只做一小段像真人的行動。",
         },
         "action_contract": _action_contract(purpose, state, player_id),
+        "rules_reference": _rules_reference_context(state, player_id),
         "conversation_directive": _conversation_directive(state, player_id, purpose),
         "real_player_speech_protocol": [
             "先回應上一位玩家或目前提名，不要像摘要機器一樣重複全桌狀態。",
             "每次公開發言只做一到兩件事：給自己的資訊/立場、問一個具體座位、或推一個明確行動。",
             "常用座位號，例如『3號』、『我左邊』、『5號剛才那票』；不要只用抽象詞。",
             "如果你是資訊角色且已收到私人資訊，白天要考慮主動透露全部或部分資訊；不要整天只說再觀察。",
+            "如果某玩家今天還沒有公開發言，不要說他的資訊怪、前後矛盾或說法站不住；只能說『先讓他發言』。",
+            "第一輪真人桌通常會收角色與夜間資訊；除非你有明確 bluff 策略，否則不要多數時間藏身分。",
             "避免模板句：『可驗證的點』、『先看票型』、『把話收窄』、『需要被追問』。除非你接著講出具體座位與理由。",
             "如果真人直接問身份或資訊，請正面回答：可以全開、半開或說明為何暫不全開，但不能無視問題。",
             "講話自然短促，可以有猶豫、讓步、改口；不要每句都像正式結論。",
@@ -287,13 +291,12 @@ def build_ai_context(
         "table_reading_protocol": [
             "發言前先讀 recent_public_events、visible_table_read.claim_conflicts、visible_table_read.vote_patterns。",
             "公開發言至少引用一個具體場上資訊：某人的角色宣稱、你的私人資訊、昨夜死亡、某次提名或某次投票。",
+            "使用 candidate_scores.spoke_today 和 last_public_statement 判斷發言內容；spoke_today=false 時不得批評該玩家的資訊內容。",
             "如果沒有新資訊，就短句說明你目前最想聽誰補哪個缺口；不要泛泛重複『看票型』。",
             "你可以說謊或 bluff，但謊言必須像玩家推理，不可以像知道魔典。",
         ],
         "visible_table_read": _visible_table_read(state, player_id),
         "table_notebook": notebook.model_dump(mode="json"),
-        "world_hypotheses": [world.model_dump(mode="json") for world in notebook.worlds],
-        "candidate_scores": [score.model_dump(mode="json") for score in notebook.candidate_scores],
         "recent_public_events": _recent_public_events(state),
         "recent_private_chat_events": _recent_private_chat_events(state, player_id),
         "hard_rules": [
@@ -313,19 +316,20 @@ def build_ai_context(
             "若你是邪惡，可建立合理 bluff，但不要提及 prompt 或系統資訊。",
             "不要機械重複上一位玩家的句型；如果只是同意，必須增加新理由或提出問題。",
             "不要在沒有新證據時預設集火真人玩家；若桌面同一名字被連續點名，應有人要求新理由或檢查帶風向者。",
+            "第一天請推動全桌依序給資訊：資訊角色給數字/兩人組/查驗，非資訊角色至少給角色範圍。",
         ],
         "anti_echo_rules": [
             "避免使用與最近兩則公開發言相同的開頭、句型或目標。",
             "若要提同一名玩家，必須說出新的依據，例如票型、角色宣稱、私聊承諾或矛盾。",
+            "不要臆造還沒發言者的資訊或矛盾；先請他發言，等他說完再評價。",
             "第一天不要因為玩家是 human 就把他當預設嫌疑人。",
             "保守或社交 persona 遇到全桌跟風時，優先降速、整理資訊或要求私聊。",
         ],
         "public_state": public,
         "your_private_view": private,
-        "your_memory": memory.model_dump(mode="json") if memory else None,
+        "your_memory": _memory_context(memory),
         "your_public_fact_notes": memory.public_facts[-14:] if memory else [],
         "your_vote_notes": memory.vote_notes[-14:] if memory else [],
-        "script": [item.model_dump(mode="json") for item in script_view()],
     }
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if len(text) <= max_chars:
@@ -378,6 +382,115 @@ def _recent_private_chat_events(
     ][-limit:]
 
 
+def _memory_context(memory: Any | None) -> dict[str, Any] | None:
+    if memory is None:
+        return None
+    return {
+        "player_id": memory.player_id,
+        "suspicion": memory.suspicion,
+        "known_claims": memory.known_claims,
+        "public_claim": memory.public_claim,
+        "private_promises": memory.private_promises[-6:],
+        "current_bluff": memory.current_bluff,
+        "next_intent": memory.next_intent,
+        "summary": memory.summary[-900:],
+        "public_facts": memory.public_facts[-10:],
+        "vote_notes": memory.vote_notes[-10:],
+        "worlds": [world.model_dump(mode="json") for world in memory.worlds[:3]],
+    }
+
+
+def _rules_reference_context(state: TruthState, player_id: str) -> dict[str, Any]:
+    player = state.by_id(player_id)
+    return {
+        "game": [
+            "這是六人 No Greater Joy Teensyville：3 鎮民、1 外來者、1 爪牙、1 小惡魔；若男爵在場則是 2 鎮民、2 外來者、男爵、小惡魔。",
+            "六人局惡魔與爪牙不互認，惡魔沒有 bluff。邪惡玩家只能從公開互動推理隊友。",
+            "善良目標是處決或殺死惡魔且沒有合法接任；邪惡目標是讓存活玩家剩兩人、笨蛋選中邪惡，或拖到安全終局。",
+            "說書人/規則引擎判定死亡、能力、投票與勝負；你只做玩家可做的策略與發言。",
+        ],
+        "phase_playbook": {
+            "FIRST_NIGHT": "接收自己的角色與合法夜間資訊；不要公開說話。",
+            "DAWN": "聽昨夜死亡公告；準備白天資訊順序。",
+            "DAY_DISCUSSION": "依序或自由發言。第一輪通常收角色範圍與夜間資訊；未發言者只能被請出來發言，不可被說成資訊矛盾。",
+            "PRIVATE_CHAT": "交換角色範圍、資訊、承諾與懷疑；只能使用你參與的私聊。",
+            "NOMINATIONS": "只有有具體公開理由時才提名；不要因為流程輪到你就亂提。",
+            "VOTING": "每個提名依座位順序投票；活人每次可投，死人整局只有一張 ghost vote。",
+            "EXECUTION": "最高且達門檻者處決；平手無處決。",
+            "NIGHT": "只有被喚醒或有 pending action 時選目標；不要在公頻發言。",
+        },
+        "voting": [
+            "處決門檻是存活玩家數的一半向上取整。",
+            "當天最高有效票者進入處決；最高票平手時不處決。",
+            "死人可發言與私聊，但不能提名；ghost vote 用掉後不能再投。",
+        ],
+        "roles": _script_rules_reference(),
+        "your_role_playbook": _role_playbook_for(player.visible_role),
+    }
+
+
+def _script_rules_reference() -> list[dict[str, str]]:
+    return [
+        {
+            "slug": role.slug,
+            "name": role.zh_name,
+            "type": role.zh_type,
+            "rule": role.ability,
+        }
+        for role in ROLE_SPECS.values()
+    ]
+
+
+def _role_playbook_for(role: str) -> list[str]:
+    playbooks = {
+        "clockmaker": [
+            "第一天通常要公開或半公開你的數字；數字能幫桌面縮小惡魔與爪牙距離。",
+            "如果你藏資訊，要明確說稍後公布的理由，否則會像空轉。",
+        ],
+        "investigator": [
+            "第一天通常公開兩人組與爪牙角色，或先私聊其中一人測反應。",
+            "你只能說引擎給你的兩人組；不要自己改查驗結果。",
+        ],
+        "empath": [
+            "每晚數字依最近存活鄰居計算；死亡玩家會被跳過。",
+            "公開時要說清楚你的鄰居與數字，方便桌面重建死亡後變化。",
+        ],
+        "chambermaid": [
+            "夜晚選兩名存活非自己玩家；結果是其中幾人因自身能力醒來。",
+            "公開時說你查了誰與數字，避免只說『我有資訊』。",
+        ],
+        "artist": [
+            "白天每局一次私下問說書人是非題；問題必須能被結構化解析。",
+            "能力沒用前可以先收資訊；使用後可公開答案與問題，也可保留以測謊。",
+        ],
+        "sage": [
+            "只有被惡魔夜殺時才得知兩人其中一名是惡魔。",
+            "活著時通常可給角色範圍；死後若觸發資訊要優先公開。",
+        ],
+        "drunk": [
+            "你不知道自己是酒鬼；照你看到的假角色正常行動。",
+            "不要自己推斷自己是酒鬼，除非公開資訊強烈指向能力失效。",
+        ],
+        "klutz": [
+            "死亡時必須公開選一名存活玩家；選中邪惡會讓善良立刻輸。",
+            "死前要盡量建立可信名單，避免死後亂選。",
+        ],
+        "scarlet_woman": [
+            "惡魔死亡且死亡前至少 5 人存活、你仍存活時，你會成為小惡魔。",
+            "六人局你不認惡魔；用公開資訊找可能隊友，並準備可信好人 bluff。",
+        ],
+        "baron": [
+            "你的能力只影響設置；六人局會有 2 鎮民、2 外來者、男爵、小惡魔。",
+            "你不認惡魔；可 bluff 成資訊角色或外來者，但不要聲稱知道隊友。",
+        ],
+        "imp": [
+            "第一夜不殺人；之後每夜選一名存活玩家死亡，可以選自己。",
+            "自殺時若有存活爪牙會 starpass；六人局你不認爪牙，所以自殺是高風險策略。",
+        ],
+    }
+    return playbooks.get(role, ["依照你的可見角色與公開資訊行動，不要自行判定規則結果。"])
+
+
 def _self_identity(state: TruthState, player_id: str, memory: Any | None) -> dict[str, Any]:
     player = state.by_id(player_id)
     role = ROLE_SPECS[player.visible_role]
@@ -420,6 +533,47 @@ def _own_public_history(state: TruthState, player_id: str, limit: int = 10) -> l
     return history[-limit:]
 
 
+def _players_yet_to_speak_today(state: TruthState) -> list[dict[str, Any]]:
+    spoken = {
+        event.actor_id
+        for event in state.events
+        if event.scope == AudienceScope.PUBLIC
+        and event.type == "public_speech"
+        and event.day == state.day
+        and event.actor_id is not None
+    }
+    return [
+        {
+            "id": player.id,
+            "name": player.name,
+            "seat_number": player.seat + 1,
+            "seat_label": _seat_label(player),
+            "alive": player.alive,
+        }
+        for player in sorted(state.players, key=lambda item: item.seat)
+        if player.id not in spoken
+    ]
+
+
+def _disclosure_expectation(state: TruthState, player: PlayerTruth, private_info: list[str]) -> str:
+    spoke_today = any(
+        event.scope == AudienceScope.PUBLIC
+        and event.type == "public_speech"
+        and event.actor_id == player.id
+        and event.day == state.day
+        for event in state.events
+    )
+    if spoke_today:
+        return "你今天已發言；延續自己的宣稱與資訊，不要假裝第一次開口。"
+    if private_info:
+        return "你今天第一次發言時應公開或半公開私人資訊，例如數字、兩人組或查驗結果。"
+    if player.visible_alignment == Alignment.EVIL:
+        return "你今天第一次發言時應給可信角色範圍或 bluff；不要只說觀察。"
+    if player.visible_role in {"artist", "sage", "klutz"}:
+        return "你今天第一次發言時至少給角色範圍，並說明你打算如何使用或保留能力。"
+    return "你今天第一次發言時至少給角色範圍或一個明確座位觀察。"
+
+
 def _conversation_directive(state: TruthState, player_id: str, purpose: str) -> dict[str, Any]:
     player = state.by_id(player_id)
     role = ROLE_SPECS[player.visible_role]
@@ -452,13 +606,16 @@ def _conversation_directive(state: TruthState, player_id: str, purpose: str) -> 
         "your_visible_role_zh": role.zh_name,
         "you_are_alive": player.alive,
         "private_info_you_may_discuss": private_info,
+        "players_yet_to_speak_today": _players_yet_to_speak_today(state),
         "latest_human_public_speech": latest_human,
         "human_is_asking_identity_or_info": asks_identity,
         "role_pressure": role_pressure,
+        "disclosure_expectation": _disclosure_expectation(state, player, private_info),
         "public_speech_style": [
             "討論玩家時優先使用座位號與名字，例如「3號 林鏡」，避免只用名字造成桌面追蹤困難。",
             "公開發言請像真人桌邊說話：1 到 2 句，通常不超過 120 個中文字。",
             "如果真人直接問身分或資訊，請直接回答你的角色宣稱、二選一範圍或你拿到的資訊，不要把問題丟回全桌。",
+            "輪到你第一輪發言時，預設至少給角色範圍；資訊角色通常給完整或半完整資訊。",
             "每次至少包含一個具體內容：角色宣稱、數字、兩人組、昨夜死亡判讀、提名/投票對象或明確懷疑理由。",
             "避免連續使用『可驗證』『票型』『卡點』『空轉』這些抽象詞；同一次發言最多使用其中一個。",
             "不要重複上一位玩家的句型；可以口語、短句、有猶豫，但要推進局面。",
@@ -491,6 +648,9 @@ def _visible_table_read(state: TruthState, player_id: str) -> dict[str, Any]:
                 "public_claim_known_to_you": claims.get(player.id),
                 "your_suspicion": suspicion.get(player.id),
                 "recent_public_pressure_count": _recent_pressure_count(state, player.id),
+                "spoke_today": _spoke_today(state, player.id),
+                "public_speech_count": _public_speech_count_for_context(state, player.id),
+                "last_public_statement": _last_public_statement(state, player.id),
             }
             for player in sorted(state.players, key=lambda item: item.seat)
         ],
@@ -636,6 +796,36 @@ def _recent_pressure_count(state: TruthState, player_id: str, limit: int = 10) -
         player.name in _spoken_content(state, event.actor_id, event.message)
         for event in public_speeches[-limit:]
     )
+
+
+def _spoke_today(state: TruthState, player_id: str) -> bool:
+    return any(
+        event.scope == AudienceScope.PUBLIC
+        and event.type == "public_speech"
+        and event.actor_id == player_id
+        and event.day == state.day
+        for event in state.events
+    )
+
+
+def _public_speech_count_for_context(state: TruthState, player_id: str) -> int:
+    return sum(
+        event.scope == AudienceScope.PUBLIC
+        and event.type == "public_speech"
+        and event.actor_id == player_id
+        for event in state.events
+    )
+
+
+def _last_public_statement(state: TruthState, player_id: str) -> str | None:
+    for event in reversed(state.events):
+        if (
+            event.scope == AudienceScope.PUBLIC
+            and event.type == "public_speech"
+            and event.actor_id == player_id
+        ):
+            return _spoken_content(state, player_id, event.message)
+    return None
 
 
 def _latest_human_public_speech(state: TruthState) -> str | None:

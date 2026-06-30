@@ -102,10 +102,12 @@ def score_candidates(
         suspicion = memory.suspicion.get(player.id, 0.5) if memory else 0.5
         pressure_count = _recent_pressure_count(state, player.id)
         vote_pressure = _vote_pressure(state, player.id)
+        public_speech_count, spoke_today, last_statement = _public_speech_stats(state, player.id)
         claim_modifier = _claim_nomination_modifier(claim, conflicts)
         night_claim_threat = INFO_ROLE_THREAT.get(claim or "", 0.0)
         alive_penalty = 0.0 if player.alive else -0.22
         self_penalty = -0.18 if player.id == player_id else 0.0
+        unspoken_penalty = -0.16 if not spoke_today and state.day >= 1 else 0.0
 
         nomination_score = _clamp01(
             suspicion
@@ -114,6 +116,7 @@ def score_candidates(
             + claim_modifier
             + alive_penalty
             + self_penalty
+            + unspoken_penalty
         )
         vote_score = _clamp01(
             suspicion
@@ -122,6 +125,7 @@ def score_candidates(
             + claim_modifier * 0.55
             + alive_penalty * 0.7
             + self_penalty
+            + unspoken_penalty
         )
         night_kill_score = _clamp01(
             0.48
@@ -139,6 +143,9 @@ def score_candidates(
                 name=player.name,
                 alive=player.alive,
                 public_claim=claim,
+                public_speech_count=public_speech_count,
+                spoke_today=spoke_today,
+                last_public_statement=last_statement,
                 suspicion=round(suspicion, 3),
                 pressure_count=pressure_count,
                 vote_pressure=round(vote_pressure, 3),
@@ -154,6 +161,8 @@ def score_candidates(
                     vote_pressure=vote_pressure,
                     conflict=claim in conflicts if claim else False,
                     alive=player.alive,
+                    spoke_today=spoke_today,
+                    last_statement=last_statement,
                 ),
             )
         )
@@ -175,14 +184,14 @@ def build_world_hypotheses(
     worlds: list[WorldHypothesis] = [
         WorldHypothesis(
             summary=(
-                f"世界A：{_score_label(top)} 最需要被追問或驗票；"
+                f"世界A：{_score_label(top)} {_world_action_text(top)}；"
                 f"{_score_label(second) if second else '暫無第二人'} 是次要壓力點。"
             ),
             demon_candidates=[top.player_id],
             minion_candidates=[second.player_id] if second else [],
             trusted_candidates=[item.player_id for item in trusted],
             confidence=round(confidence, 3),
-            next_test=f"請 {_score_label(top)} 給出可回頭檢查的角色範圍或夜間資訊。",
+            next_test=_next_test_for_score(top),
         )
     ]
     if len(ranked) >= 3:
@@ -197,7 +206,11 @@ def build_world_hypotheses(
                 minion_candidates=[top.player_id, ranked[2].player_id],
                 trusted_candidates=[item.player_id for item in trusted],
                 confidence=round(max(0.2, confidence - 0.12), 3),
-                next_test=f"比對 {_score_label(top)} 與 {_score_label(alternate)} 的提名和投票理由。",
+                next_test=(
+                    f"先讓 {_score_label(top)} 發言，再比對 {_score_label(alternate)}。"
+                    if not top.spoke_today
+                    else f"比對 {_score_label(top)} 與 {_score_label(alternate)} 的提名和投票理由。"
+                ),
             )
         )
     if own_player.visible_alignment == Alignment.EVIL:
@@ -318,6 +331,20 @@ def _recent_pressure_count(state: TruthState, target_id: str, limit: int = 16) -
     return count
 
 
+def _public_speech_stats(state: TruthState, player_id: str) -> tuple[int, bool, str | None]:
+    speeches = [
+        event
+        for event in state.events
+        if event.scope == AudienceScope.PUBLIC
+        and event.type == "public_speech"
+        and event.actor_id == player_id
+    ]
+    if not speeches:
+        return 0, False, None
+    today = any(event.day == state.day for event in speeches)
+    return len(speeches), today, _compact_spoken_line(speeches[-1].message)
+
+
 def _vote_pressure(state: TruthState, target_id: str) -> float:
     score = 0.0
     for nomination in state.nominations:
@@ -343,14 +370,22 @@ def _score_reasons(
     vote_pressure: float,
     conflict: bool,
     alive: bool,
+    spoke_today: bool,
+    last_statement: str | None,
 ) -> list[str]:
     reasons: list[str] = []
     player = state.by_id(player_id)
-    reasons.append(f"{player.seat + 1}號{player.name} 記憶懷疑值 {suspicion:.2f}")
+    if spoke_today:
+        reasons.append(f"{player.seat + 1}號{player.name} 今天已發言")
+    else:
+        reasons.append(f"{player.seat + 1}號{player.name} 今天尚未發言，不能評價其資訊內容")
     if claim:
         reasons.append(f"公開宣稱 {ROLE_SPECS[claim].zh_name}")
     else:
         reasons.append("尚未有清楚公開宣稱")
+    if last_statement:
+        reasons.append(f"最後發言：{last_statement}")
+    reasons.append(f"記憶懷疑值 {suspicion:.2f}")
     if pressure_count:
         reasons.append(f"最近公開提到 {pressure_count} 次")
     if abs(vote_pressure) >= 0.03:
@@ -369,6 +404,17 @@ def _compact_event_line(event: GameEvent) -> str:
     return f"D{event.day}/{event.type}: {clean}"
 
 
+def _compact_spoken_line(message: str) -> str:
+    clean = re.sub(r"\s+", " ", message).strip()
+    if "：" in clean:
+        clean = clean.split("：", 1)[1].strip()
+    elif ":" in clean:
+        clean = clean.split(":", 1)[1].strip()
+    if len(clean) > 90:
+        clean = f"{clean[:89].rstrip()}…"
+    return clean
+
+
 def _player_label(state: TruthState, player_id: str) -> str:
     player = state.by_id(player_id)
     return f"{player.seat + 1}號{player.name}"
@@ -378,6 +424,18 @@ def _score_label(score: CandidateScore | None) -> str:
     if score is None:
         return "暫無對象"
     return f"{score.seat_number}號{score.name}"
+
+
+def _world_action_text(score: CandidateScore) -> str:
+    if not score.spoke_today:
+        return "今天還沒發言，應先請他開口"
+    return "最需要被追問或驗票"
+
+
+def _next_test_for_score(score: CandidateScore) -> str:
+    if not score.spoke_today:
+        return f"請 {_score_label(score)} 先發言；在他開口前不要說他的資訊矛盾。"
+    return f"請 {_score_label(score)} 給出可回頭檢查的角色範圍或夜間資訊。"
 
 
 def _endgame_warning(state: TruthState) -> str | None:
