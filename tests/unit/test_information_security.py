@@ -139,6 +139,29 @@ def test_ai_context_contains_rules_reference_without_truth() -> None:
     assert "current_demon_id" not in context
 
 
+def test_ai_context_teaches_investigator_claim_semantics_without_truth() -> None:
+    state = fixed_state("clockmaker", "investigator", "empath", "klutz", "scarlet_woman", "imp")
+
+    context = build_ai_context(state, "ai_3", purpose="public_speech")
+
+    assert "claim_semantics" in context
+    assert "調查員不知道兩人中到底哪一位是爪牙" in context
+    assert "不要追問調查員" in context
+    assert "正確追問是請 2 號與 6 號給角色範圍" in context
+    assert "true_role" not in context
+    assert "current_demon_id" not in context
+
+
+def test_ai_context_teaches_empath_neighbor_semantics_without_truth() -> None:
+    state = fixed_state("clockmaker", "investigator", "empath", "klutz", "scarlet_woman", "imp")
+
+    context = build_ai_context(state, "ai_3", purpose="public_speech")
+
+    assert "共情者每晚得到兩名最近存活鄰居中的邪惡人數" in context
+    assert "不是自己任選兩名玩家" in context
+    assert "true_role" not in context
+
+
 def test_private_chat_only_visible_to_participants() -> None:
     state = fixed_state()
     state.add_event(
