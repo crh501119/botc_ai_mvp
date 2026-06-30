@@ -129,13 +129,42 @@ def test_artist_dsl() -> None:
     assert evaluate_artist_query(state, query) is True
     parsed = parse_artist_question("ai_5 是否為惡魔？", state)
     assert parsed.supported
+    assert parsed.query is not None
+    assert parsed.query.player_id == "ai_5"
 
 
 @pytest.mark.asyncio
 async def test_artist_unsupported_query_does_not_spend_ability(mock_engine) -> None:
     state = fixed_state("artist", "clockmaker", "empath", "klutz", "scarlet_woman", "imp")
+    state.phase = Phase.DAY_DISCUSSION
     result = await mock_engine.artist_question(state, "human", "今晚我應該相信誰的夢？")
     assert not result.ok
+    assert not any(event.type == "artist_used:human" for event in state.events)
+
+
+@pytest.mark.asyncio
+async def test_artist_question_records_private_answer_and_spends_ability(mock_engine) -> None:
+    state = fixed_state("artist", "clockmaker", "empath", "klutz", "scarlet_woman", "imp")
+    state.phase = Phase.DAY_DISCUSSION
+
+    result = await mock_engine.artist_question(state, "human", "ai_5 是否為惡魔？")
+
+    assert result.ok
+    assert result.message == "是"
+    event = next(event for event in state.events if event.type == "artist_used:human")
+    assert event.scope == AudienceScope.PLAYER_ONLY
+    assert event.target_ids == ["human"]
+
+
+@pytest.mark.asyncio
+async def test_artist_question_rejected_at_night(mock_engine) -> None:
+    state = fixed_state("artist", "clockmaker", "empath", "klutz", "scarlet_woman", "imp")
+    state.phase = Phase.NIGHT
+
+    result = await mock_engine.artist_question(state, "human", "ai_5 是否為惡魔？")
+
+    assert not result.ok
+    assert "白天" in result.message
     assert not any(event.type == "artist_used:human" for event in state.events)
 
 

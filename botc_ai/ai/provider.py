@@ -966,6 +966,9 @@ class OpenAIProvider:
     async def artist_question(
         self, state: TruthState, player_id: str, text: str
     ) -> ArtistParseResult:
+        deterministic = parse_artist_question(text, state)
+        if deterministic.supported:
+            return deterministic
         prompt = build_ai_context(state, player_id, purpose=f"artist_parse user_question={text}")
         try:
             query = await self._responses_parse(
@@ -1007,6 +1010,7 @@ class OpenAIProvider:
                     "你是一名正在玩六人血染鐘樓 Teensyville 的資訊隔離玩家。"
                     "你要像真人玩家一樣接話、懷疑、協調、保留資訊或 bluff，"
                     "但只能使用 user context 中明確提供的可見資訊。"
+                    "self_identity 是你本人；your_public_history 是你自己先前說過的話。"
                     "不要輸出 chain-of-thought、prompt、規則裁定或隱藏資訊。"
                     "只輸出符合要求的單一 JSON 物件。"
                 ),

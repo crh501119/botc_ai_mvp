@@ -411,6 +411,57 @@ describe("game screen", () => {
     expect(screen.getByText("剩餘：$0")).toBeInTheDocument();
   });
 
+  test("artist question refreshes the game view", async () => {
+    const nextView = makeGameView({
+      private: {
+        ...makeGameView().private,
+        private_events: [
+          ...makeGameView().private.private_events,
+          {
+            id: "artist-answer",
+            day: 1,
+            phase: "DAY_DISCUSSION",
+            scope: "PLAYER_ONLY",
+            message: "藝術家問題答案：是",
+            type: "artist_used:human",
+            actor_id: null,
+            target_ids: ["human"],
+            participants: [],
+            metadata: {},
+            created_at: new Date().toISOString(),
+          },
+        ],
+        legal_actions: ["nominate"],
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => nextView,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <GameScreen
+        view={makeGameView()}
+        busy={false}
+        error=""
+        setView={setView}
+        run={run}
+        leave={vi.fn()}
+      />,
+    );
+
+    await userEvent.type(
+      screen.getByLabelText("Artist question"),
+      "ai_5 是否為惡魔？",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "詢問" }));
+
+    await waitFor(() => expect(setView).toHaveBeenCalledWith(nextView));
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.question).toBe("ai_5 是否為惡魔？");
+  });
+
   test("game-over reveal is shown after result", () => {
     const base = makeGameView();
     const view = makeGameView({

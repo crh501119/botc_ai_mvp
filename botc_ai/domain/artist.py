@@ -227,8 +227,13 @@ def parse_artist_question(text: str, state: TruthState) -> ArtistParseResult:
 
 
 def _find_player(text: str, state: TruthState) -> PlayerTruth | None:
+    normalized = text.lower()
     for player in state.players:
-        if player.id.lower() in text or player.name.lower() in text or str(player.seat + 1) in text:
+        if player.id.lower() in normalized or player.name.lower() in normalized:
+            return player
+    for player in state.players:
+        seat_number = str(player.seat + 1)
+        if re.search(rf"(?<![\w]){seat_number}\s*(號|号|座|位)?(?![\w])", normalized):
             return player
     return None
 

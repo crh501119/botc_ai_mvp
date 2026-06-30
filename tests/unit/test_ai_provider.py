@@ -214,6 +214,25 @@ async def test_openai_failure_records_visible_diagnostic_and_failed_usage() -> N
 
 
 @pytest.mark.asyncio
+async def test_openai_artist_question_uses_deterministic_parser_first() -> None:
+    class Provider(OpenAIProvider):
+        def __post_init__(self) -> None:
+            self.client = None
+
+        async def _responses_parse(self, prompt, schema, model):  # type: ignore[no-untyped-def]
+            raise AssertionError("deterministic artist question should not call OpenAI")
+
+    state = fixed_state("artist", "clockmaker", "empath", "klutz", "scarlet_woman", "imp")
+    provider = Provider(api_key="test", dialogue_model="test-model", decision_model="test-model")
+
+    parsed = await provider.artist_question(state, "human", "ai_5 是否為惡魔？")
+
+    assert parsed.supported
+    assert parsed.query is not None
+    assert parsed.query.player_id == "ai_5"
+
+
+@pytest.mark.asyncio
 async def test_openai_responses_parse_helper_returns_pydantic_action() -> None:
     class FakeResponses:
         def __init__(self) -> None:

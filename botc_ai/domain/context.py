@@ -118,6 +118,7 @@ def legal_actions_for(state: TruthState, player_id: str) -> list[str]:
         player.alive
         and player.visible_role == "artist"
         and state.phase in {"DAY_DISCUSSION", "PRIVATE_CHAT"}
+        and not _artist_used(state, player_id)
     ):
         actions.append("artist_question")
     if state.pending_klutz_id == player_id:
@@ -150,6 +151,10 @@ def _player_can_vote_pending_nomination(state: TruthState, player_id: str) -> bo
     return not any(
         vote.nomination_id == nomination.id and vote.voter_id == player_id for vote in state.votes
     )
+
+
+def _artist_used(state: TruthState, player_id: str) -> bool:
+    return any(event.type == f"artist_used:{player_id}" for event in state.events)
 
 
 def build_private_view(state: TruthState, player_id: str) -> PlayerPrivateView:
@@ -253,6 +258,13 @@ def build_ai_context(
         "language": "zh-TW",
         "purpose": purpose,
         "persona": persona.__dict__ if persona else None,
+        "self_identity": _self_identity(state, player_id, memory),
+        "self_reference_rules": [
+            "凡 actor_id 等於 self_identity.player_id 的 public_speech、nomination、vote 或 private_chat，都是你自己做過的事。",
+            "your_public_history 是你自己先前公開說過的話；延續或修正它，不要把它當成別人的發言。",
+            "如果你之前已經宣稱角色或資訊，後續發言要承認那是你的說法，除非你打算明確改口或 bluff。",
+        ],
+        "your_public_history": _own_public_history(state, player_id),
         "table_cadence": {
             "ai_status": state.ai_last_status,
             "active_player_id": state.ai_active_player_id,
@@ -323,6 +335,7 @@ def build_ai_context(
     public["public_events"] = public["public_events"][-20:]
     private["private_chats"] = private["private_chats"][-12:]
     private["private_events"] = private["private_events"][-18:]
+    payload["your_public_history"] = payload["your_public_history"][-8:]
     payload["table_notebook"]["public_facts"] = payload["table_notebook"]["public_facts"][-10:]
     payload["table_notebook"]["private_info"] = payload["table_notebook"]["private_info"][-6:]
     payload["table_notebook"]["vote_notes"] = payload["table_notebook"]["vote_notes"][-8:]
@@ -363,6 +376,48 @@ def _recent_private_chat_events(
         if event.scope == AudienceScope.PRIVATE_CHAT_PARTICIPANTS
         and player_id in event.participants
     ][-limit:]
+
+
+def _self_identity(state: TruthState, player_id: str, memory: Any | None) -> dict[str, Any]:
+    player = state.by_id(player_id)
+    role = ROLE_SPECS[player.visible_role]
+    return {
+        "player_id": player.id,
+        "name": player.name,
+        "seat": player.seat,
+        "seat_number": player.seat + 1,
+        "seat_label": _seat_label(player),
+        "alive": player.alive,
+        "visible_role_slug": player.visible_role,
+        "visible_role_zh": role.zh_name,
+        "visible_alignment": player.visible_alignment,
+        "public_claim_you_have_made": memory.public_claim if memory else None,
+        "current_bluff_you_are_tracking": memory.current_bluff if memory else None,
+        "next_intent": memory.next_intent if memory else "",
+    }
+
+
+def _own_public_history(state: TruthState, player_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    player = state.by_id(player_id)
+    history: list[dict[str, Any]] = []
+    for event in state.events:
+        if event.scope != AudienceScope.PUBLIC or event.actor_id != player_id:
+            continue
+        if event.type not in {"public_speech", "nomination", "defense", "vote"}:
+            continue
+        history.append(
+            {
+                "day": event.day,
+                "phase": event.phase,
+                "type": event.type,
+                "actor_id": event.actor_id,
+                "actor_label": _seat_label(player),
+                "this_was_you": True,
+                "message": event.message,
+                "spoken_content": _spoken_content(state, player_id, event.message),
+            }
+        )
+    return history[-limit:]
 
 
 def _conversation_directive(state: TruthState, player_id: str, purpose: str) -> dict[str, Any]:
@@ -419,7 +474,9 @@ def _conversation_directive(state: TruthState, player_id: str, purpose: str) -> 
 def _visible_table_read(state: TruthState, player_id: str) -> dict[str, Any]:
     memory = state.ai_memories.get(player_id)
     suspicion = memory.suspicion if memory else {}
-    claims = memory.known_claims if memory else {}
+    claims = dict(memory.known_claims) if memory else {}
+    if memory and memory.public_claim:
+        claims[player_id] = memory.public_claim
     return {
         "players": [
             {

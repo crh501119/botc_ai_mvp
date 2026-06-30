@@ -485,20 +485,24 @@ def create_app() -> FastAPI:
             state, request.player_id, dev_reveal=settings.dev_reveal, session_token=player_token
         )
 
-    @app.post("/api/games/{game_id}/artist", response_model=ActionResponse)
+    @app.post("/api/games/{game_id}/artist", response_model=GameView)
     async def artist(
         game_id: str,
         request: ArtistQuestionRequest,
         player_token: str | None = Header(default=None, alias="X-Player-Token"),
         session: Session = Depends(get_db),
-    ) -> ActionResponse:
+    ) -> GameView:
         state = _load(session, game_id)
         _require_human_session(state, request.player_id, player_token)
         engine = make_engine_for_state(settings, mock_ai=state.mock_ai)
         result = await engine.artist_question(state, request.player_id, request.question)
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.message)
         GameRepository(session).save_state(state)
         session.commit()
-        return ActionResponse(ok=result.ok, message=result.message)
+        return build_game_view(
+            state, request.player_id, dev_reveal=settings.dev_reveal, session_token=player_token
+        )
 
     @app.post("/api/games/{game_id}/klutz", response_model=GameView)
     async def klutz(

@@ -1306,7 +1306,7 @@ export function GameScreen({
                 event.preventDefault();
                 run(
                   () =>
-                    api<{ ok: boolean; message: string }>(
+                    api<GameView>(
                       `/api/games/${view.public.game_id}/artist`,
                       {
                         method: "POST",
@@ -1317,7 +1317,7 @@ export function GameScreen({
                       },
                       effectiveSession.token,
                     ),
-                  () => undefined,
+                  (next) => setView(next),
                 ).then(() => setArtistQuestion(""));
               }}
             >

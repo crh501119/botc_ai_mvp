@@ -50,6 +50,25 @@ def test_ai_context_contains_public_claim_conflicts_without_truth() -> None:
     assert "true_role" not in context
 
 
+def test_ai_context_marks_self_identity_and_own_public_history() -> None:
+    state = fixed_state()
+    state.add_event(
+        "2號 沈炬：我先報鐘錶匠，數字是 1。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="ai_1",
+    )
+
+    context = build_ai_context(state, "ai_1", purpose="public_speech")
+
+    assert '"self_identity"' in context
+    assert '"player_id":"ai_1"' in context
+    assert '"your_public_history"' in context
+    assert '"this_was_you":true' in context
+    assert "我先報鐘錶匠" in context
+    assert "true_role" not in context
+
+
 def test_private_chat_only_visible_to_participants() -> None:
     state = fixed_state()
     state.add_event(

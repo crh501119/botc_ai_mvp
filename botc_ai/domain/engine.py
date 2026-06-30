@@ -1070,6 +1070,8 @@ class GameEngine:
             return RuleResult(False, "死亡玩家不能使用藝術家能力。")
         if player.visible_role != "artist":
             return RuleResult(False, "你目前沒有藝術家能力。")
+        if state.phase not in {Phase.DAY_DISCUSSION, Phase.PRIVATE_CHAT}:
+            return RuleResult(False, "藝術家只能在白天討論或私聊階段私下詢問說書人。")
         used_key = f"artist_used:{player_id}"
         if any(event.type == used_key for event in state.events):
             return RuleResult(False, "藝術家能力已使用過。")
