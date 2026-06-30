@@ -583,6 +583,7 @@ def _conversation_directive(state: TruthState, player_id: str, purpose: str) -> 
         if event.scope == AudienceScope.PLAYER_ONLY and player_id in event.target_ids
     ][-5:]
     latest_human = _latest_human_public_speech(state)
+    latest_human_analysis = _latest_human_public_speech_analysis(state, player_id)
     asks_identity = _asks_identity_or_info(latest_human or "")
     first_night_info_roles = {"clockmaker", "investigator", "empath", "chambermaid"}
     role_pressure = "正常桌上需要你給出可回頭檢查的內容，不要只說看票型。"
@@ -608,12 +609,15 @@ def _conversation_directive(state: TruthState, player_id: str, purpose: str) -> 
         "private_info_you_may_discuss": private_info,
         "players_yet_to_speak_today": _players_yet_to_speak_today(state),
         "latest_human_public_speech": latest_human,
+        "latest_human_speech_analysis": latest_human_analysis,
         "human_is_asking_identity_or_info": asks_identity,
         "role_pressure": role_pressure,
         "disclosure_expectation": _disclosure_expectation(state, player, private_info),
         "public_speech_style": [
             "討論玩家時優先使用座位號與名字，例如「3號 林鏡」，避免只用名字造成桌面追蹤困難。",
             "公開發言請像真人桌邊說話：1 到 2 句，通常不超過 120 個中文字。",
+            "回應真人前先看 latest_human_speech_analysis：若真人主要指向別人，不要把那句當成在指控你自己。",
+            "若 latest_human_speech_analysis.directly_targets_you=false 且 primary_targets 有其他玩家，只能評論該指控、請被點名者回答，或補充你的資訊。",
             "如果真人直接問身分或資訊，請直接回答你的角色宣稱、二選一範圍或你拿到的資訊，不要把問題丟回全桌。",
             "輪到你第一輪發言時，預設至少給角色範圍；資訊角色通常給完整或半完整資訊。",
             "每次至少包含一個具體內容：角色宣稱、數字、兩人組、昨夜死亡判讀、提名/投票對象或明確懷疑理由。",
@@ -829,14 +833,131 @@ def _last_public_statement(state: TruthState, player_id: str) -> str | None:
 
 
 def _latest_human_public_speech(state: TruthState) -> str | None:
+    event = _latest_human_public_speech_event(state)
+    if event is None:
+        return None
+    return _spoken_content(state, event.actor_id, event.message)
+
+
+def _latest_human_public_speech_event(state: TruthState) -> GameEvent | None:
     for event in reversed(state.events):
         if (
             event.scope == AudienceScope.PUBLIC
             and event.type == "public_speech"
             and event.actor_id == state.human_id
         ):
-            return _spoken_content(state, event.actor_id, event.message)
+            return event
     return None
+
+
+def _latest_human_public_speech_analysis(state: TruthState, viewer_id: str) -> dict[str, Any]:
+    event = _latest_human_public_speech_event(state)
+    if event is None:
+        return {
+            "exists": False,
+            "spoken_content": None,
+            "mentioned_players": [],
+            "primary_targets": [],
+            "directly_mentions_you": False,
+            "directly_targets_you": False,
+            "accuses_you": False,
+            "response_instruction": "目前沒有真人公開發言需要回應。",
+        }
+
+    text = _spoken_content(state, event.actor_id, event.message)
+    mentioned = _mentioned_players_in_text(state, text, viewer_id=viewer_id)
+    primary_targets = [
+        item for item in mentioned if event.actor_id is None or item["id"] != event.actor_id
+    ]
+    primary_target_ids = {item["id"] for item in primary_targets}
+    directly_mentions_you = any(item["id"] == viewer_id for item in mentioned)
+    directly_targets_you = viewer_id in primary_target_ids
+    accusation_language = _contains_accusation_language(text)
+    accuses_you = directly_targets_you and accusation_language
+    return {
+        "exists": True,
+        "speaker_id": event.actor_id,
+        "speaker_label": _seat_label(state.by_id(event.actor_id)) if event.actor_id else None,
+        "spoken_content": text,
+        "mentioned_players": mentioned,
+        "primary_targets": primary_targets,
+        "primary_target_ids": sorted(primary_target_ids),
+        "directly_mentions_you": directly_mentions_you,
+        "directly_targets_you": directly_targets_you,
+        "accusation_language_detected": accusation_language,
+        "accuses_you": accuses_you,
+        "response_instruction": _human_speech_response_instruction(
+            primary_targets=primary_targets,
+            directly_targets_you=directly_targets_you,
+            accuses_you=accuses_you,
+            asks_identity_or_info=_asks_identity_or_info(text),
+        ),
+    }
+
+
+def _mentioned_players_in_text(
+    state: TruthState, text: str, *, viewer_id: str
+) -> list[dict[str, Any]]:
+    mentioned: list[dict[str, Any]] = []
+    for player in sorted(state.players, key=lambda item: item.seat):
+        seat_number = player.seat + 1
+        seat_pattern = rf"(?<!\d){seat_number}\s*號"
+        if re.search(seat_pattern, text) or player.name in text:
+            mentioned.append(
+                {
+                    "id": player.id,
+                    "name": player.name,
+                    "seat_number": seat_number,
+                    "seat_label": _seat_label(player),
+                    "is_you": player.id == viewer_id,
+                }
+            )
+    return mentioned
+
+
+def _contains_accusation_language(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    return any(
+        token in compact
+        for token in (
+            "邪惡",
+            "壞人",
+            "惡魔",
+            "小惡魔",
+            "爪牙",
+            "可疑",
+            "狼",
+            "弄出去",
+            "推出去",
+            "出局",
+            "提名",
+            "處決",
+        )
+    )
+
+
+def _human_speech_response_instruction(
+    *,
+    primary_targets: list[dict[str, Any]],
+    directly_targets_you: bool,
+    accuses_you: bool,
+    asks_identity_or_info: bool,
+) -> str:
+    target_labels = "、".join(str(item["seat_label"]) for item in primary_targets)
+    if accuses_you:
+        return (
+            "真人正在指控或壓力你；請用你的公開宣稱、可見資訊或票型正面回應，不要轉移成無關問題。"
+        )
+    if directly_targets_you:
+        return "真人正在直接問你或點你；請正面回答，必要時給角色範圍、夜間資訊或明確立場。"
+    if primary_targets:
+        return (
+            f"真人這句主要指向 {target_labels}，不是在指控你；不要替自己辯護，"
+            "可以評論這個指控是否合理、請被點名者回答，或補充你手上的可見資訊。"
+        )
+    if asks_identity_or_info:
+        return "真人在問全桌身份或資訊；請回答自己的角色範圍、夜間資訊或說明為何暫時保留。"
+    return "真人沒有直接點名你；回應時先接住他的問題，再補一個具體座位或資訊點。"
 
 
 def _asks_identity_or_info(text: str) -> bool:

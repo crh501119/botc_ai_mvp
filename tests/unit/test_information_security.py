@@ -88,6 +88,43 @@ def test_ai_context_lists_unspoken_players_and_warning() -> None:
     assert "true_role" not in context
 
 
+def test_ai_context_resolves_human_accusation_target_by_seat() -> None:
+    state = fixed_state()
+    state.add_event(
+        "1號 旅人：我覺得2號是邪惡陣營，因為他一直想把我弄出去。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="human",
+    )
+
+    context_for_third_seat = build_ai_context(state, "ai_2", purpose="public_speech")
+
+    assert '"latest_human_speech_analysis"' in context_for_third_seat
+    assert '"primary_target_ids":["ai_1"]' in context_for_third_seat
+    assert '"directly_targets_you":false' in context_for_third_seat
+    assert '"accuses_you":false' in context_for_third_seat
+    assert "不是在指控你" in context_for_third_seat
+    assert "true_role" not in context_for_third_seat
+
+
+def test_ai_context_marks_viewer_when_human_accuses_their_seat() -> None:
+    state = fixed_state()
+    state.add_event(
+        "1號 旅人：我覺得2號是邪惡陣營，因為他一直想把我弄出去。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="human",
+    )
+
+    context_for_second_seat = build_ai_context(state, "ai_1", purpose="public_speech")
+
+    assert '"primary_target_ids":["ai_1"]' in context_for_second_seat
+    assert '"directly_targets_you":true' in context_for_second_seat
+    assert '"accuses_you":true' in context_for_second_seat
+    assert "真人正在指控或壓力你" in context_for_second_seat
+    assert "true_role" not in context_for_second_seat
+
+
 def test_ai_context_contains_rules_reference_without_truth() -> None:
     state = fixed_state("clockmaker", "investigator", "empath", "klutz", "scarlet_woman", "imp")
 
