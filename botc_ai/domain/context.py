@@ -290,6 +290,7 @@ def build_ai_context(
         ],
         "table_reading_protocol": [
             "發言前先讀 recent_public_events、visible_table_read.claim_conflicts、visible_table_read.vote_patterns。",
+            "再讀 claim_engine.parsed_public_claims；若 claim_engine 已標示某資訊是完整格式，不要追問角色規則上不可能知道的細節。",
             "公開發言至少引用一個具體場上資訊：某人的角色宣稱、你的私人資訊、昨夜死亡、某次提名或某次投票。",
             "使用 candidate_scores.spoke_today 和 last_public_statement 判斷發言內容；spoke_today=false 時不得批評該玩家的資訊內容。",
             "如果沒有新資訊，就短句說明你目前最想聽誰補哪個缺口；不要泛泛重複『看票型』。",
@@ -297,6 +298,13 @@ def build_ai_context(
         ],
         "visible_table_read": _visible_table_read(state, player_id),
         "table_notebook": notebook.model_dump(mode="json"),
+        "claim_engine": {
+            "parsed_public_claims": [
+                claim.model_dump(mode="json") for claim in notebook.parsed_claims[-10:]
+            ],
+            "claim_warnings": notebook.claim_warnings,
+            "unparsed_policy": "若玩家宣稱無法解析，不要自行補完；請對方用座位號、角色名、數字或兩人組重講。",
+        },
         "recent_public_events": _recent_public_events(state),
         "recent_private_chat_events": _recent_private_chat_events(state, player_id),
         "hard_rules": [
@@ -343,6 +351,12 @@ def build_ai_context(
     payload["table_notebook"]["public_facts"] = payload["table_notebook"]["public_facts"][-10:]
     payload["table_notebook"]["private_info"] = payload["table_notebook"]["private_info"][-6:]
     payload["table_notebook"]["vote_notes"] = payload["table_notebook"]["vote_notes"][-8:]
+    payload["table_notebook"]["parsed_claims"] = payload["table_notebook"]["parsed_claims"][-6:]
+    payload["table_notebook"]["claim_warnings"] = payload["table_notebook"]["claim_warnings"][-6:]
+    payload["claim_engine"]["parsed_public_claims"] = payload["claim_engine"][
+        "parsed_public_claims"
+    ][-6:]
+    payload["claim_engine"]["claim_warnings"] = payload["claim_engine"]["claim_warnings"][-6:]
     payload["public_state"] = public
     payload["your_private_view"] = private
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

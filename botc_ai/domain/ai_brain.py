@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from botc_ai.domain.claim_parser import (
+    claim_warnings_for,
+    parse_public_claims,
+    public_role_claims_from_events,
+)
 from botc_ai.domain.models import (
     AIMemory,
     AudienceScope,
@@ -61,7 +66,9 @@ def build_table_notebook(
     worlds: list[WorldHypothesis] | None = None,
 ) -> TableNotebook:
     memory = state.ai_memories.get(player_id)
+    parsed_claims = parse_public_claims(state)
     claims = _visible_claims(memory, player_id)
+    claims.update(public_role_claims_from_events(state, parsed_claims))
     claim_conflicts = _claim_conflicts(state, claims)
     candidate_scores = (
         scores if scores is not None else score_candidates(state, player_id, valid_targets)
@@ -73,6 +80,8 @@ def build_table_notebook(
         day=state.day,
         phase=state.phase,
         claims=claims,
+        parsed_claims=parsed_claims[-14:],
+        claim_warnings=claim_warnings_for(parsed_claims),
         public_facts=_public_facts_from_events(state),
         vote_notes=_vote_notes(state),
         private_info=_private_info_for_player(state, player_id),
@@ -89,6 +98,7 @@ def score_candidates(
     memory = state.ai_memories.get(player_id)
     valid_ids = set(valid_targets) if valid_targets is not None else None
     claims = _visible_claims(memory, player_id)
+    claims.update(public_role_claims_from_events(state))
     conflicts = _claim_conflict_roles(claims)
     scores: list[CandidateScore] = []
     for player in sorted(state.players, key=lambda item: item.seat):

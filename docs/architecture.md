@@ -60,6 +60,12 @@ OpenAI prompts include this notebook as a bounded public-safe table read. Mock A
 
 Candidate scores include whether each player has spoken today, how many public speeches they have made, and their latest public statement. AI players must not criticize the information content of a player who has not yet spoken today; they may only ask that player to speak. Information roles are prompted to share complete or partial information in their first day speech unless they have an explicit bluff or secrecy reason.
 
+## Public Claim Semantics
+
+No Greater Joy now has a small public-claim semantics layer for AI comprehension. `role_knowledge.py` stores machine-readable role knowledge such as each role's information shape, deduction limits, invalid follow-up questions, and useful follow-ups. `claim_parser.py` reads only public speech events and conservatively parses common table claims such as Clockmaker distance, Investigator two-candidate minion results, Empath neighbor counts, Chambermaid wake counts, Artist yes/no answers, and role-only claims.
+
+Parsed claims are stored in the public-safe `TableNotebook` as `parsed_claims` and `claim_warnings`. They are reasoning aids, not rule adjudications: if a claim cannot be parsed, the AI should ask the player to restate it with role names, seat numbers, targets, or numbers instead of inventing missing details. This layer never reads TruthState hidden roles, alignments, the demon id, storyteller-internal events, private chats outside the viewer, or database rows.
+
 ## Multiplayer Rooms
 
 The app now supports a small real multiplayer table for 1 to 6 human seats, with remaining seats filled by AI. A game creator chooses the human count during setup, claims the first human seat, and receives a share link containing only `game_id`. Other browsers open the link, view the lobby, and claim an open human seat. The game remains in `SETUP` until every configured human seat is claimed; only the host seat can start the game.

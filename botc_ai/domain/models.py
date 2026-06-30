@@ -157,10 +157,36 @@ class WorldHypothesis(BaseModel):
     next_test: str = ""
 
 
+class ParsedPublicClaim(BaseModel):
+    event_id: str
+    speaker_id: str | None = None
+    speaker_name: str | None = None
+    speaker_seat: int | None = None
+    raw_text: str
+    claim_type: str
+    claimed_role: str | None = None
+    claimed_role_zh: str | None = None
+    info_shape: str | None = None
+    target_ids: list[str] = Field(default_factory=list)
+    target_seats: list[int] = Field(default_factory=list)
+    target_labels: list[str] = Field(default_factory=list)
+    result_role: str | None = None
+    result_role_zh: str | None = None
+    number: int | None = None
+    answer: bool | None = None
+    is_complete_format: bool = False
+    invalid_followups: list[str] = Field(default_factory=list)
+    good_followups: list[str] = Field(default_factory=list)
+    deduction_limits: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
 class TableNotebook(BaseModel):
     day: int = 1
     phase: Phase = Phase.SETUP
     claims: dict[str, str] = Field(default_factory=dict)
+    parsed_claims: list[ParsedPublicClaim] = Field(default_factory=list)
+    claim_warnings: list[str] = Field(default_factory=list)
     public_facts: list[str] = Field(default_factory=list)
     vote_notes: list[str] = Field(default_factory=list)
     private_info: list[str] = Field(default_factory=list)

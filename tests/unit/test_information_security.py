@@ -152,6 +152,25 @@ def test_ai_context_teaches_investigator_claim_semantics_without_truth() -> None
     assert "current_demon_id" not in context
 
 
+def test_ai_context_includes_parsed_claim_engine_without_truth() -> None:
+    state = fixed_state("clockmaker", "investigator", "empath", "klutz", "scarlet_woman", "imp")
+    state.add_event(
+        "1號 旅人：我是調查員，2、6 有一個紅唇女郎。",
+        scope=AudienceScope.PUBLIC,
+        type="public_speech",
+        actor_id="human",
+    )
+
+    context = build_ai_context(state, "ai_3", purpose="public_speech")
+
+    assert '"claim_engine"' in context
+    assert "investigator_two_candidates_one_minion" in context
+    assert "不要追問唯一爪牙" in context
+    assert "target_seats" in context
+    assert "true_role" not in context
+    assert "current_demon_id" not in context
+
+
 def test_ai_context_teaches_empath_neighbor_semantics_without_truth() -> None:
     state = fixed_state("clockmaker", "investigator", "empath", "klutz", "scarlet_woman", "imp")
 
